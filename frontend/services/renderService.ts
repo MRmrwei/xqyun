@@ -95,7 +95,11 @@ async function fetchData<T>(
   query: Record<string, string>
 ): Promise<T | null> {
   try {
-    const body = await $fetch<ApiEnvelope<T>>(`${apiBase()}${path}`, { query })
+    const body = await $fetch<ApiEnvelope<T>>(`${apiBase()}${path}`, {
+      query,
+      // 标记服务端渲染请求：后端据此跳过成功请求的访问日志，失败仍会记录。
+      headers: import.meta.server ? { 'X-Xqyun-Client': 'ssr' } : undefined
+    })
     if (!body || body.code !== 0 || body.data === undefined) return null
     return body.data
   } catch {
