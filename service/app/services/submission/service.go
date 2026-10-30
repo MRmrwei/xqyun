@@ -1,6 +1,6 @@
-// Package submission 定义表单留言的用例契约：接口、入参、状态与错误。
+// Package submission 定义表单留言的用例契约：前台提交接口、入参、状态与错误。
 //
-// 具体实现见 app/services/submission/impl；控制器只依赖这里的接口。
+// 具体实现见 app/services/submission/impl；后台管理能力是具体方法，不在这里抽接口。
 package submission
 
 import (
@@ -44,25 +44,10 @@ type SubmitInput struct {
 }
 
 // Submitter 是前台提交能力。
+//
+// 只保留这一个接口：前台是公开入口，控制器拿接口类型就调不到后台的列表 / 状态管理能力，
+// 以后加防刷、人机验证、限流也只需替换实现。后台列表 / 详情 / 状态是同一套管理逻辑，
+// 没有替换需求，直接用 impl.Service 的具体方法。
 type Submitter interface {
 	Submit(ctx context.Context, input SubmitInput) (dto.FrontendSubmissionResult, error)
-}
-
-// Lister 是后台列表与导出能力。
-type Lister interface {
-	List(ctx context.Context, input ListInput) (dto.AdminSubmissionListResponse, error)
-	Export(ctx context.Context, input ListInput) ([]dto.AdminSubmission, error)
-}
-
-// Manager 是后台详情与状态管理能力。
-type Manager interface {
-	Detail(ctx context.Context, id uint64) (dto.AdminSubmission, error)
-	UpdateStatus(ctx context.Context, id uint64, status string, now int64) (dto.AdminSubmission, error)
-}
-
-// Service 是表单留言的用例集合。
-type Service interface {
-	Submitter
-	Lister
-	Manager
 }

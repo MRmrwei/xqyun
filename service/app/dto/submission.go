@@ -36,6 +36,11 @@ type AdminSubmissionListResponse struct {
 	Stats    AdminSubmissionStats `json:"stats"`
 }
 
+// AdminSubmissionUnreadCountResponse 是待处理留言数量，供后台侧边栏红点轮询。
+type AdminSubmissionUnreadCountResponse struct {
+	Count int64 `json:"count"`
+}
+
 // AdminSubmissionStatusRequest 是标记留言处理状态请求。
 type AdminSubmissionStatusRequest struct {
 	Status string `json:"status"`

@@ -5,6 +5,7 @@
 //   - detail.go 留言详情
 //   - status.go 标记处理状态
 //   - export.go 导出 CSV
+//   - unread_count.go 待处理数量（侧边栏红点轮询）
 //
 // 控制器只负责参数解析与响应组装，业务逻辑在 app/services/submission，
 // 数据访问在 app/repository/submission。

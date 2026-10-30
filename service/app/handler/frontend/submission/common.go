@@ -14,8 +14,9 @@ import (
 	submissionimpl "suki/xqyun/app/services/submission/impl"
 )
 
-// newService 按请求组装表单留言用例。
-func newService(app application.Application) *submissionimpl.Service {
+// newService 按请求组装前台提交用例。
+// 返回接口类型：前台只该拿到提交能力，拿不到后台的列表 / 详情 / 状态管理。
+func newService(app application.Application) submissionservice.Submitter {
 	return submissionimpl.New(submissionrepository.New(app.DB()))
 }
 

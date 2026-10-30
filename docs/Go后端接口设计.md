@@ -832,6 +832,7 @@ type AdminUser struct {
 | GET | `/api/v1/admin/submissions/:id` | 留言详情 | `form:read` |
 | PUT | `/api/v1/admin/submissions/:id/status` | 标记处理状态 | `form:edit` |
 | GET | `/api/v1/admin/submissions/export` | 导出 CSV | `form:read` |
+| GET | `/api/v1/admin/submissions/unread-count` | 待处理留言数量（后台侧边栏红点轮询） | `form:read` |
 
 列表查询参数：
 
@@ -886,6 +887,7 @@ type AdminUser struct {
 - 来源只记录语言（`zh-CN` / `en`），不记录具体来源页面。
 - 标记状态：`PUT /api/v1/admin/submissions/:id/status`，请求体 `{"status":"processing"}`，返回更新后的留言详情。
 - 导出：`text/csv; charset=utf-8`，带 UTF-8 BOM，`Content-Disposition: attachment`；筛选参数与列表一致，最多导出 10000 条。
+- 待处理数量：`GET /api/v1/admin/submissions/unread-count` 返回 `data: { "count": 5 }`，只统计 `status = new`，不带列表与其余状态；后台侧边栏红点每 30 秒轮询一次（标签页不可见时暂停，切回立即刷新）。
 
 ### 4.7 账号、角色与审计
 

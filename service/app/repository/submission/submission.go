@@ -140,6 +140,24 @@ func (r *Repository) StatusCounts(ctx context.Context, filter Filter) (StatusCou
 	return counts, nil
 }
 
+// CountByStatus 统计指定处理状态的留言数量。
+// 供后台侧边栏红点轮询使用，只返回一个数字，不做列表与聚合。
+func (r *Repository) CountByStatus(ctx context.Context, status string) (int64, error) {
+	if r.db == nil {
+		return 0, fmt.Errorf("数据访问层：数据库未初始化")
+	}
+
+	var count int64
+	err := r.db.WithContext(ctx).
+		Model(&models.FormSubmission{}).
+		Where("status = ?", status).
+		Count(&count).Error
+	if err != nil {
+		return 0, fmt.Errorf("统计留言数量失败：%w", err)
+	}
+	return count, nil
+}
+
 // Create 保存一条新的表单留言。
 func (r *Repository) Create(ctx context.Context, row *models.FormSubmission) error {
 	if r.db == nil {

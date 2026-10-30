@@ -1,5 +1,6 @@
-// Package impl 提供 submission.Service 的默认实现：
+// Package impl 提供表单留言用例的默认实现：
 // 校验入参、读写 xqyun_form_submissions，并映射为接口层 DTO。
+// 前台提交实现 submission.Submitter；后台列表 / 详情 / 状态是具体方法。
 package impl
 
 import (
@@ -23,12 +24,12 @@ var validStatuses = map[string]struct{}{
 	submission.StatusSpam:       {},
 }
 
-// Service 是 submission.Service 的默认实现。
+// Service 是表单留言用例的默认实现。
 type Service struct {
 	submissions *submissionrepository.Repository
 }
 
-var _ submission.Service = (*Service)(nil)
+var _ submission.Submitter = (*Service)(nil)
 
 // New 创建表单留言用例服务。
 func New(submissions *submissionrepository.Repository) *Service {
@@ -72,6 +73,12 @@ func (s *Service) List(
 			Spam:       counts.Spam,
 		},
 	}, nil
+}
+
+// UnreadCount 返回待处理（status = new）留言数量，供后台侧边栏红点轮询。
+// 只有这一个实现、没有替换需求，因此不抽到 services/submission 的契约接口里。
+func (s *Service) UnreadCount(ctx context.Context) (int64, error) {
+	return s.submissions.CountByStatus(ctx, submission.StatusNew)
 }
 
 // Detail 查询留言详情。

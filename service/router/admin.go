@@ -71,8 +71,9 @@ func AdminRouters(
 	// 线索：表单留言
 	submissions := submissionhandler.NewController(app)
 	authorized.GET("/submissions", submissions.List)
-	// 静态路径放在 :id 之前注册，避免 export 被当成留言 ID。
+	// 静态路径放在 :id 之前注册，避免 export / unread-count 被当成留言 ID。
 	authorized.GET("/submissions/export", submissions.Export)
+	authorized.GET("/submissions/unread-count", submissions.UnreadCount)
 	authorized.GET("/submissions/:id", submissions.Detail)
 	authorized.PUT("/submissions/:id/status", submissions.UpdateStatus)
 }
