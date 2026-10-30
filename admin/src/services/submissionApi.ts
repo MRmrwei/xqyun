@@ -60,6 +60,12 @@ export function listSubmissions(
   })
 }
 
+/** 待处理留言数量，供侧边栏红点轮询：只返回一个数字，不带列表。 */
+export async function getSubmissionUnreadCount(): Promise<number> {
+  const result = await api.get<{ count: number }>('/admin/submissions/unread-count')
+  return result.count
+}
+
 export function updateSubmissionStatus(
   id: string,
   status: SubmissionStatus

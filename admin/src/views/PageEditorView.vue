@@ -159,12 +159,8 @@
     </el-dialog>
   </div>
 
-  <div v-else-if="pagesStore.loading" class="adm-page">
-    <el-result icon="info" title="正在加载页面" sub-title="正在读取页面数据…" />
-  </div>
-
-  <div v-else-if="pagesStore.loadError" class="adm-page">
-    <el-result icon="error" title="页面加载失败" :sub-title="pagesStore.loadError">
+  <div v-else-if="loadFailure" class="adm-page">
+    <el-result icon="error" title="页面加载失败" :sub-title="loadFailure">
       <template #extra>
         <el-button @click="router.push('/pages')">返回页面列表</el-button>
         <el-button type="primary" :loading="pagesStore.loading" @click="reload">
@@ -172,6 +168,10 @@
         </el-button>
       </template>
     </el-result>
+  </div>
+
+  <div v-else-if="pagesStore.loading" class="adm-page">
+    <el-result icon="info" title="正在加载页面" sub-title="正在读取页面数据…" />
   </div>
 
   <div v-else class="adm-page">
@@ -212,9 +212,36 @@ const router = useRouter()
 const pagesStore = usePagesStore()
 const { pages } = storeToRefs(pagesStore)
 
+const pageId = computed(() => {
+  return typeof route.params.id === 'string' ? route.params.id : ''
+})
+
+/**
+ * 编辑器需要三份数据：页面列表（翻译配对与路径校验）、站点设置（预览头部页脚）
+ * 与当前页的完整草稿。三者都到齐才渲染，避免用摘要（区块为空）进入编辑。
+ */
+const ready = computed(
+  () =>
+    pagesStore.pagesLoaded &&
+    pagesStore.settingsLoaded &&
+    pagesStore.hasDetail(pageId.value)
+)
+
 const page = computed<PageRecord | null>(() => {
-  const id = typeof route.params.id === 'string' ? route.params.id : ''
-  return (id && pagesStore.getById(id)) || null
+  if (!ready.value) return null
+  return (pageId.value && pagesStore.getById(pageId.value)) || null
+})
+
+const loadFailure = computed(
+  () => pagesStore.detailError || pagesStore.pagesError || pagesStore.settingsError
+)
+
+/* 进入即按 id 取详情；换页面时重新取。 */
+void pagesStore.ensurePageList()
+void pagesStore.ensureSiteSettings()
+void pagesStore.ensurePageDetail(pageId.value)
+watch(pageId, (id) => {
+  if (id) void pagesStore.ensurePageDetail(id)
 })
 
 const currentStatus = computed(() => (page.value ? pagesStore.statusOf(page.value) : 'draft'))
@@ -346,9 +373,11 @@ async function muteWhile(action: () => Promise<void>) {
 }
 
 async function reload() {
-  await pagesStore.reloadAll()
-  if (pagesStore.loadError) {
-    ElMessage.error(pagesStore.loadError)
+  void pagesStore.ensurePageList(true)
+  void pagesStore.ensureSiteSettings(true)
+  await pagesStore.ensurePageDetail(pageId.value, true)
+  if (pagesStore.detailError) {
+    ElMessage.error(pagesStore.detailError)
   }
 }
 

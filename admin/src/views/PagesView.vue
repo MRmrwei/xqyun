@@ -1,5 +1,21 @@
 <template>
-  <div class="adm-page">
+  <div v-if="!studioReady" class="adm-page">
+    <el-result
+      icon="info"
+      title="正在加载站点编排"
+      sub-title="正在读取页面列表、导航与站点配置…"
+    />
+  </div>
+
+  <div v-else-if="studioError" class="adm-page">
+    <el-result icon="error" title="站点编排加载失败" :sub-title="studioError">
+      <template #extra>
+        <el-button type="primary" @click="loadStudio(true)">重新加载</el-button>
+      </template>
+    </el-result>
+  </div>
+
+  <div v-else class="adm-page">
     <header class="adm-page-head">
       <div>
         <p class="adm-kicker">SITE STUDIO</p>
@@ -141,7 +157,7 @@
 
         <el-table-column label="区块" width="80" align="center">
           <template #default="{ row }">
-            <span class="mono">{{ row.blocks.length }}</span>
+            <span class="mono">{{ blockCount(row) }}</span>
           </template>
         </el-table-column>
 
@@ -257,7 +273,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { storeToRefs } from 'pinia'
 import { ElMessage, ElMessageBox } from 'element-plus'
@@ -286,6 +302,23 @@ const tab = computed<StudioTab>(() => {
   const view = route.query.view
   return view === 'header' || view === 'footer' || view === 'settings' ? view : 'pages'
 })
+
+/* 站点编排页按需加载：页面摘要 + 站点设置（四个 Tab 与预览都要用）。 */
+// 从编辑器返回时数据已在内存里，直接用，避免闪一下加载态。
+const studioReady = ref(pagesStore.pagesLoaded && pagesStore.settingsLoaded)
+const studioError = ref('')
+
+async function loadStudio(force = false) {
+  studioError.value = ''
+  await Promise.all([
+    pagesStore.ensurePageList(force),
+    pagesStore.ensureSiteSettings(force)
+  ])
+  studioError.value = pagesStore.pagesError || pagesStore.settingsError
+  studioReady.value = true
+}
+
+onMounted(() => loadStudio())
 
 const tabs = computed(() => [
   {
@@ -382,6 +415,12 @@ function statusOf(row: unknown): PageStatus {
 
 function pairOf(row: unknown): PageRecord | undefined {
   return pagesStore.pairOf(asPage(row))
+}
+
+/** 区块数要打开过编辑器才有；列表只拿摘要时显示占位。 */
+function blockCount(row: unknown): string | number {
+  const page = asPage(row)
+  return pagesStore.hasDetail(page.id) ? page.blocks.length : '—'
 }
 
 function fullPath(row: unknown): string {
@@ -510,8 +549,14 @@ const { checks: publishChecks, ready: publishReady } = usePublishValidation(
   publishPair
 )
 
-function openPublish(row: unknown) {
-  publishTarget.value = asPage(row)
+async function openPublish(row: unknown) {
+  const page = asPage(row)
+  const detail = await pagesStore.ensurePageDetail(page.id)
+  if (!detail) {
+    ElMessage.error(pagesStore.detailError || '加载页面内容失败，请稍后重试')
+    return
+  }
+  publishTarget.value = detail
   publishOpen.value = true
 }
 
@@ -564,8 +609,14 @@ const previewCollections = computed(() =>
   pagesStore.collections(previewTarget.value?.locale ?? 'zh')
 )
 
-function openPreview(row: unknown) {
-  previewTarget.value = asPage(row)
+async function openPreview(row: unknown) {
+  const page = asPage(row)
+  const detail = await pagesStore.ensurePageDetail(page.id)
+  if (!detail) {
+    ElMessage.error(pagesStore.detailError || '加载页面内容失败，请稍后重试')
+    return
+  }
+  previewTarget.value = detail
   previewOpen.value = true
 }
 </script>

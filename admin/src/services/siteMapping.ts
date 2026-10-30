@@ -24,6 +24,7 @@ import type {
   ApiMenuSaveRequest,
   ApiPageBlock,
   ApiPageDraft,
+  ApiPageSummary,
   ApiSeo
 } from '@/services/siteApi'
 
@@ -78,6 +79,38 @@ export function pageFromApi(draft: ApiPageDraft): PageRecord {
             seo: { ...seo, keywords: [...seo.keywords] },
             publishedAt: formatApiTime(draft.updated_at),
             publishedBy: ''
+          }
+        : null
+  }
+}
+
+/**
+ * 列表摘要 → 页面记录。
+ * 列表接口不返回区块与 SEO，这里只填列表需要的字段；区块数量与编辑内容
+ * 由编辑器进入时调 getPage 取详情补充（见 stores/pages 的 ensurePageDetail）。
+ */
+export function pageSummaryFromApi(summary: ApiPageSummary): PageRecord {
+  const status = summary.status === 'published' ? 'published' : 'draft'
+  const emptySeo = { title: '', description: '', keywords: [] }
+
+  return {
+    id: summary.id,
+    groupId: summary.group_id,
+    locale: fromApiLocale(summary.locale),
+    path: summary.path,
+    name: summary.name,
+    status,
+    updatedAt: formatApiTime(summary.updated_at),
+    seo: emptySeo,
+    blocks: [],
+    published:
+      status === 'published'
+        ? {
+            version: summary.version,
+            blocks: [],
+            seo: { ...emptySeo, keywords: [] },
+            publishedAt: formatApiTime(summary.updated_at),
+            publishedBy: summary.updated_by
           }
         : null
   }

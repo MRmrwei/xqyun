@@ -1,4 +1,4 @@
-import { computed, ref } from 'vue'
+import { computed, reactive, ref } from 'vue'
 import { defineStore } from 'pinia'
 import type { Locale, PageRecord, SiteCollections, SiteSettings } from '~/domain/types'
 import type {
@@ -34,7 +34,6 @@ import {
   translatePage as translatePageApi,
   unpublishPage as unpublishPageApi,
   type ApiMenuDetail,
-  type ApiPageDraft,
   type ApiPageSummary
 } from '@/services/siteApi'
 import {
@@ -44,11 +43,13 @@ import {
   headerMenuPayload,
   pageBlocksToApi,
   pageFromApi,
+  pageSummaryFromApi,
   siteSettingsFromApi,
   siteSettingsPayload,
   toApiLocale
 } from '@/services/siteMapping'
 import {
+  getSubmissionUnreadCount,
   listSubmissions,
   submissionFromApi,
   updateSubmissionStatus,
@@ -84,12 +85,33 @@ export const usePagesStore = defineStore('pages', () => {
     clone({ ...seedLoginSettings, ...(persisted?.loginSettings ?? {}) })
   )
 
-  const loading = ref(false)
-  const loaded = ref(false)
-  const loadError = ref('')
+  // 按需加载：页面列表、站点设置、单页详情各自独立，哪个页面用到哪个才拉。
+  const pagesLoading = ref(false)
+  const pagesLoaded = ref(false)
+  const pagesError = ref('')
+  const settingsLoading = ref(false)
+  const settingsLoaded = ref(false)
+  const settingsError = ref('')
+  const detailLoading = ref(false)
+  const detailError = ref('')
+  /** 已取到完整草稿的页面 id；列表里其余项只有摘要字段。 */
+  const detailLoadedIds = reactive(new Set<string>())
+  /** 侧边栏「站点编排」的页面总数，只取 total，不依赖列表是否已加载。 */
+  const pageCount = ref(0)
+
+  /** 聚合状态：后台外壳与编辑器沿用这两个值。 */
+  const loading = computed(
+    () => pagesLoading.value || settingsLoading.value || detailLoading.value
+  )
+  const loadError = computed(() => pagesError.value || settingsError.value)
+
   const storageError = ref('')
   const lastSavedAt = ref(formatClock())
-  let loadTask: Promise<void> | null = null
+  let pagesTask: Promise<void> | null = null
+  let settingsTask: Promise<void> | null = null
+  let detailTask: Promise<PageRecord | null> | null = null
+  let detailTaskId = ''
+  let badgeTask: Promise<void> | null = null
   let submissionRequestId = 0
   let lastSubmissionQuery: SubmissionQuery = { page: 1, pageSize: 20 }
 
@@ -107,23 +129,18 @@ export const usePagesStore = defineStore('pages', () => {
     }
   }
 
-  async function fetchPageRecords(): Promise<PageRecord[]> {
+  /** 分页取全量页面摘要；列表接口不返回区块，只填列表需要的字段。 */
+  async function fetchPageSummaries(): Promise<ApiPageSummary[]> {
     const summaries: ApiPageSummary[] = []
     let page = 1
     for (;;) {
       const result = await listPages({ page, page_size: 100 })
       summaries.push(...result.items)
+      pageCount.value = result.total
       if (result.items.length === 0 || summaries.length >= result.total || page >= 50) break
       page += 1
     }
-
-    // 列表接口不返回区块，编辑器与预览需要完整草稿，因此逐页取详情。
-    const settled = await Promise.allSettled(
-      summaries.map((item) => getPage(item.id))
-    )
-    return settled
-      .filter((item): item is PromiseFulfilledResult<ApiPageDraft> => item.status === 'fulfilled')
-      .map((item) => pageFromApi(item.value))
+    return summaries
   }
 
   async function fetchSiteSettings(): Promise<SiteSettings> {
@@ -143,7 +160,7 @@ export const usePagesStore = defineStore('pages', () => {
     })
   }
 
-  /** 从 Go API 加载页面与站点配置；重复调用会复用同一次请求。 */
+  /** 加载留言列表与状态统计；只有进入表单留言页才调用。 */
   async function loadSubmissions(query: SubmissionQuery = {}): Promise<void> {
     lastSubmissionQuery = query
     const requestId = ++submissionRequestId
@@ -168,13 +185,24 @@ export const usePagesStore = defineStore('pages', () => {
     }
   }
 
-  /** 只刷新待处理留言数，供侧边栏红点使用；不覆盖当前列表、筛选与统计卡片。 */
-  async function refreshSubmissionStats(): Promise<void> {
+  /**
+   * 只刷新待处理留言数量，供侧边栏红点使用。
+   * 走专用计数接口，不拉列表、不算其余状态；不覆盖当前列表与统计卡片。
+   * 重复调用会复用同一次请求。
+   */
+  async function refreshSubmissionBadge(): Promise<void> {
+    if (badgeTask) return badgeTask
+    badgeTask = (async () => {
+      try {
+        newSubmissionCount.value = await getSubmissionUnreadCount()
+      } catch {
+        // 静默失败：保留上一次数量，不打断当前操作。
+      }
+    })()
     try {
-      const result = await listSubmissions({ page: 1, page_size: 1 })
-      newSubmissionCount.value = result.stats.new
-    } catch {
-      // 静默失败：保留上一次统计，不打断当前操作。
+      await badgeTask
+    } finally {
+      badgeTask = null
     }
   }
 
@@ -199,38 +227,108 @@ export const usePagesStore = defineStore('pages', () => {
     return result
   }
 
-  async function ensureLoaded(force = false): Promise<void> {
-    if (loaded.value && !force) return
-    if (loadTask) return loadTask
+  /** 加载页面列表摘要；已加载过则直接复用。 */
+  async function ensurePageList(force = false): Promise<void> {
+    if (pagesLoaded.value && !force) return
+    if (pagesTask) return pagesTask
 
-    loading.value = true
-    loadError.value = ''
-    loadTask = (async () => {
+    pagesLoading.value = true
+    pagesError.value = ''
+    pagesTask = (async () => {
       try {
-        const [pageRecords, nextSettings] = await Promise.all([
-          fetchPageRecords(),
-          fetchSiteSettings(),
-          loadSubmissions(lastSubmissionQuery)
-        ])
-        pages.value = pageRecords
-        settings.value = nextSettings
-        loaded.value = true
+        const summaries = await fetchPageSummaries()
+        // 已经取过详情的页面保留完整草稿，避免刷新列表把正在编辑的内容冲掉。
+        const details = new Map(
+          pages.value
+            .filter((page) => detailLoadedIds.has(page.id))
+            .map((page) => [page.id, page] as const)
+        )
+        pages.value = summaries.map(
+          (summary) => details.get(summary.id) ?? pageSummaryFromApi(summary)
+        )
+        pagesLoaded.value = true
         lastSavedAt.value = formatClock()
-        // 清掉旧版本地演示缓存里的页面与站点设置，只保留留言 / 登录设置。
+        // 清掉旧版本地演示缓存；localStorage 只保留登录页设置。
         persist()
       } catch (error) {
-        loadError.value =
-          error instanceof Error ? error.message : '加载站点数据失败，请稍后重试'
+        pagesError.value =
+          error instanceof Error ? error.message : '加载页面列表失败，请稍后重试'
       } finally {
-        loading.value = false
-        loadTask = null
+        pagesLoading.value = false
+        pagesTask = null
       }
     })()
-    return loadTask
+    return pagesTask
   }
 
-  async function reloadAll(): Promise<void> {
-    await ensureLoaded(true)
+  /** 加载站点设置与顶部 / 底部导航；已加载过则直接复用。 */
+  async function ensureSiteSettings(force = false): Promise<void> {
+    if (settingsLoaded.value && !force) return
+    if (settingsTask) return settingsTask
+
+    settingsLoading.value = true
+    settingsError.value = ''
+    settingsTask = (async () => {
+      try {
+        settings.value = await fetchSiteSettings()
+        settingsLoaded.value = true
+      } catch (error) {
+        settingsError.value =
+          error instanceof Error ? error.message : '加载站点配置失败，请稍后重试'
+      } finally {
+        settingsLoading.value = false
+        settingsTask = null
+      }
+    })()
+    return settingsTask
+  }
+
+  /** 侧边栏只需要页面总数，不拉列表内容。 */
+  async function loadPageCount(): Promise<void> {
+    try {
+      const result = await listPages({ page: 1, page_size: 1 })
+      pageCount.value = result.total
+    } catch {
+      // 静默失败：侧边栏数字不是关键路径。
+    }
+  }
+
+  /**
+   * 按 id 取单个页面的完整草稿；编辑器、草稿预览与发布前调用。
+   * 取到后替换列表里的摘要项，后续读 pages 就是完整记录。
+   */
+  async function ensurePageDetail(id: string, force = false): Promise<PageRecord | null> {
+    if (!id) return null
+    if (!force && detailLoadedIds.has(id)) return getById(id) ?? null
+    if (detailTask && detailTaskId === id) return detailTask
+
+    detailLoading.value = true
+    detailError.value = ''
+    detailTaskId = id
+    detailTask = (async () => {
+      try {
+        const record = pageFromApi(await getPage(id))
+        const index = pages.value.findIndex((page) => page.id === id)
+        if (index >= 0) pages.value[index] = record
+        else pages.value.push(record)
+        detailLoadedIds.add(id)
+        return record
+      } catch (error) {
+        detailError.value =
+          error instanceof Error ? error.message : '加载页面失败，请稍后重试'
+        return null
+      } finally {
+        detailLoading.value = false
+        detailTask = null
+        detailTaskId = ''
+      }
+    })()
+    return detailTask
+  }
+
+  /** 该页面的完整草稿是否已加载（列表项只有摘要时返回 false）。 */
+  function hasDetail(id: string): boolean {
+    return detailLoadedIds.has(id)
   }
 
   function getById(id: string): PageRecord | undefined {
@@ -268,6 +366,9 @@ export const usePagesStore = defineStore('pages', () => {
 
     const page = pageFromApi(draft)
     pages.value.unshift(page)
+    // 新建接口返回的就是完整草稿，进编辑器不用再取一次详情。
+    detailLoadedIds.add(page.id)
+    pageCount.value += 1
     return page
   }
 
@@ -281,6 +382,8 @@ export const usePagesStore = defineStore('pages', () => {
     })
     const copy = pageFromApi(draft)
     pages.value.unshift(copy)
+    detailLoadedIds.add(copy.id)
+    pageCount.value += 1
     return copy
   }
 
@@ -288,6 +391,8 @@ export const usePagesStore = defineStore('pages', () => {
     await deletePageApi(pageId)
     const index = pages.value.findIndex((page) => page.id === pageId)
     if (index >= 0) pages.value.splice(index, 1)
+    detailLoadedIds.delete(pageId)
+    pageCount.value = Math.max(0, pageCount.value - 1)
   }
 
   /** 保存草稿。返回后只同步服务端确定的元数据，避免覆盖请求期间的新编辑。 */
@@ -349,6 +454,8 @@ export const usePagesStore = defineStore('pages', () => {
     })
     const translated = pageFromApi(draft)
     pages.value.push(translated)
+    detailLoadedIds.add(translated.id)
+    pageCount.value += 1
     return translated
   }
 
@@ -409,10 +516,9 @@ export const usePagesStore = defineStore('pages', () => {
     if (index >= 0) submissions.value[index] = record
     await loadSubmissions(lastSubmissionQuery)
     // 状态变更可能让待处理数量变化，立即同步红点。
-    void refreshSubmissionStats()
+    void refreshSubmissionBadge()
   }
 
-  const pageCount = computed(() => pages.value.length)
   const submissionCount = computed(() => submissionStats.value.total)
   /** 全站待处理留言数，只由全局查询或定时刷新更新。 */
   const newSubmissionCount = ref(0)
@@ -427,17 +533,27 @@ export const usePagesStore = defineStore('pages', () => {
     submissionsError,
     loginSettings,
     loading,
-    loaded,
     loadError,
+    pagesLoading,
+    pagesLoaded,
+    pagesError,
+    settingsLoading,
+    settingsLoaded,
+    settingsError,
+    detailLoading,
+    detailError,
     storageError,
     lastSavedAt,
     pageCount,
     submissionCount,
     newSubmissionCount,
-    ensureLoaded,
-    reloadAll,
+    ensurePageList,
+    ensureSiteSettings,
+    ensurePageDetail,
+    hasDetail,
+    loadPageCount,
     loadSubmissions,
-    refreshSubmissionStats,
+    refreshSubmissionBadge,
     setSubmissionStatus,
     getById,
     getByPath,

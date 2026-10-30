@@ -149,18 +149,44 @@ const newSubmissionBadge = computed(() => {
   return count > 99 ? '99+' : String(count)
 })
 
-let statsTimer: ReturnType<typeof setInterval> | null = null
+/** 红点轮询间隔：后台是运营工具，30 秒足够，不必做成实时大屏。 */
+const BADGE_POLL_MS = 30_000
+let badgeTimer: ReturnType<typeof setInterval> | null = null
+
+function startBadgePolling() {
+  if (badgeTimer) return
+  badgeTimer = setInterval(() => {
+    void pagesStore.refreshSubmissionBadge()
+  }, BADGE_POLL_MS)
+}
+
+function stopBadgePolling() {
+  if (!badgeTimer) return
+  clearInterval(badgeTimer)
+  badgeTimer = null
+}
+
+/** 标签页不可见时停止轮询；切回时立刻刷新一次，再恢复轮询。 */
+function handleVisibilityChange() {
+  if (document.visibilityState === 'visible') {
+    void pagesStore.refreshSubmissionBadge()
+    startBadgePolling()
+    return
+  }
+  stopBadgePolling()
+}
 
 onMounted(() => {
-  void pagesStore.refreshSubmissionStats()
-  // 定时刷新待处理数量，停留在后台也能看到新留言红点。
-  statsTimer = setInterval(() => {
-    void pagesStore.refreshSubmissionStats()
-  }, 60_000)
+  // 外壳只取自己显示的两个数字，不加载页面内容。
+  void pagesStore.loadPageCount()
+  void pagesStore.refreshSubmissionBadge()
+  if (document.visibilityState === 'visible') startBadgePolling()
+  document.addEventListener('visibilitychange', handleVisibilityChange)
 })
 
 onBeforeUnmount(() => {
-  if (statsTimer) clearInterval(statsTimer)
+  stopBadgePolling()
+  document.removeEventListener('visibilitychange', handleVisibilityChange)
 })
 const isSettingsActive = computed(
   () => route.path === '/settings' || route.path.startsWith('/settings/')

@@ -10,7 +10,6 @@ import AccountSettingsView from '@/views/AccountSettingsView.vue'
 import LoginView from '@/views/LoginView.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
 import { getSession, isAuthenticated, refreshSession } from '@/services/auth'
-import { usePagesStore } from '@/stores/pages'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -104,11 +103,8 @@ router.beforeEach(async (to) => {
     }
   }
 
-  // 页面、导航与站点配置都来自 Go API，进入后台前先加载一次。
-  // 加载失败时仍允许进入，由页面展示错误提示，避免卡在路由守卫。
-  const pagesStore = usePagesStore()
-  await pagesStore.ensureLoaded()
-
+  // 业务数据不在守卫里预加载：各页面自己按需拉取（站点编排拉列表与设置，
+  // 编辑器按 id 取单页草稿，留言 / 素材页只拉自己的列表）。
   return true
 })
 
