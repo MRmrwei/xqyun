@@ -27,11 +27,12 @@ func NewAccessLog() app.HandlerFunc {
 
 // shouldLog 在响应返回后判断是否写访问日志。
 //   - /ping 由健康检查每 10 秒调用一次，不记录。
+//   - /metrics 由 Prometheus 每 15 秒抓取一次，不记录。
 //   - 官网 SSR 每打开一个页面都会请求 site/config、site/nav、render/page，
 //     次数远高于人工访问，成功（<400）时不记录，失败仍保留。
 //     注意统一响应下业务错误也是 HTTP 200，这类问题要看 handler 的 hlog 错误日志。
 func shouldLog(_ context.Context, c *app.RequestContext) bool {
-	if c.FullPath() == "/ping" {
+	if p := c.FullPath(); p == "/ping" || p == "/metrics" {
 		return false
 	}
 	silent := c.Request.Header.Get(ssrClientHeader) == ssrClientValue &&

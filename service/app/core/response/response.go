@@ -4,6 +4,8 @@ import (
 	"net/http"
 
 	"github.com/cloudwego/hertz/pkg/app"
+
+	"suki/xqyun/app/core/metrics"
 )
 
 // 业务码：0 表示成功，其余按 HTTP 语义分段，便于前端区分。
@@ -30,24 +32,22 @@ func Success(c *app.RequestContext, data any) {
 }
 
 func SuccessWithMsg(c *app.RequestContext, data any, message string) {
-	c.JSON(http.StatusOK, Body{
-		Code:    CodeOK,
-		Message: message,
-		Data:    data,
-	})
+	writeJSON(c, CodeOK, message, data)
 }
 
 // Fail 返回失败响应。
 // HTTP 状态统一为 200，成功 / 失败由业务码 code 判断，避免客户端把 HTTP 4xx/5xx 当成不同的错误通道。
 func Fail(c *app.RequestContext, code int, message string) {
-	c.JSON(http.StatusOK, Body{
-		Code:    code,
-		Message: message,
-	})
+	FailWithData(c, code, message, nil)
 }
 
 // FailWithData 返回带附加数据的失败响应，例如字段校验详情。
 func FailWithData(c *app.RequestContext, code int, message string, data any) {
+	writeJSON(c, code, message, data)
+}
+
+func writeJSON(c *app.RequestContext, code int, message string, data any) {
+	metrics.ObserveBusiness(c.FullPath(), code)
 	c.JSON(http.StatusOK, Body{
 		Code:    code,
 		Message: message,

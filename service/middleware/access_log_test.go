@@ -17,6 +17,7 @@ func TestShouldLog(t *testing.T) {
 		wantLogged bool
 	}{
 		{name: "健康检查不记录", fullPath: "/ping", status: http.StatusOK, wantLogged: false},
+		{name: "指标抓取不记录", fullPath: "/metrics", status: http.StatusOK, wantLogged: false},
 		{name: "SSR 成功请求不记录", fullPath: "/api/v1/frontend/render/page", clientTag: ssrClientValue, status: http.StatusOK, wantLogged: false},
 		{name: "SSR 失败请求保留", fullPath: "/api/v1/frontend/render/page", clientTag: ssrClientValue, status: http.StatusInternalServerError, wantLogged: true},
 		{name: "SSR 重定向不记录", fullPath: "/api/v1/frontend/render/page", clientTag: ssrClientValue, status: http.StatusMovedPermanently, wantLogged: false},

@@ -4,6 +4,8 @@ package main
 
 import (
 	"github.com/cloudwego/hertz/pkg/app/server"
+	"github.com/cloudwego/hertz/pkg/common/adaptor"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"suki/xqyun/app/core/application"
 	handler "suki/xqyun/app/handler"
 	"suki/xqyun/middleware"
@@ -12,7 +14,13 @@ import (
 
 // customizeRegister registers customize routers.
 func customizedRegister(r *server.Hertz, app application.Application) {
+	// /metrics 必须在 r.Use 之前注册：Hertz 在注册路由时对当前中间件链做快照，
+	// 先注册的 /metrics 不经过访问日志与指标中间件，既不会自己记自己，
+	// 也不会每 15 秒产生一条访问日志。
+	r.GET("/metrics", adaptor.HertzHandler(promhttp.Handler()))
+
 	r.Use(middleware.NewAccessLog())
+	r.Use(middleware.NewHTTPMetrics())
 
 	r.GET("/ping", handler.NewPingController(app).Ping)
 
