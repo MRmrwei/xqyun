@@ -1,0 +1,12 @@
+# Prometheus 抓取配置（挂载到容器 /etc/prometheus/prometheus.yml）。
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: xqyun-backend
+    metrics_path: /metrics
+    static_configs:
+      # Compose 内部网络的服务名，不需要暴露宿主机端口。
+      # /metrics 不挂 /api/v1，也不经 Nginx 转发，公网不可达。
+      - targets: ["backend:8888"]

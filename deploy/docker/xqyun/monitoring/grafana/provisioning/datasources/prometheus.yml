@@ -1,0 +1,12 @@
+# 数据源自动装载，Grafana 首次启动即连好 Prometheus，不需要手工添加。
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    # 固定 uid，看板 JSON 直接按 uid 引用，重建 Grafana 不会丢关联
+    uid: prometheus
+    type: prometheus
+    access: proxy
+    url: http://prometheus:9090
+    isDefault: true
+    editable: false

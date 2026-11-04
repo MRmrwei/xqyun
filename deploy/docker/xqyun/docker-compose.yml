@@ -116,7 +116,9 @@ services:
       # Alpine 镜像不带时区数据库，挂载宿主机的 zoneinfo 让 TZ=Asia/Shanghai 生效。
       - /usr/share/zoneinfo:/usr/share/zoneinfo:ro
     ports:
-      - "${BACKEND_PORT:-8888}:8888"
+      # 只绑定回环：Nginx 与前端都走 Compose 内网，宿主机端口仅用于调试。
+      # 不要改回 "8888:8888"，否则后端接口与 /metrics 指标都会暴露到公网。
+      - "127.0.0.1:${BACKEND_PORT:-8888}:8888"
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "-", "http://127.0.0.1:8888/ping"]
       interval: 10s
@@ -160,3 +162,50 @@ services:
       - ./data/nginx/conf:/etc/nginx/conf.d:ro
     ports:
       - "${HTTP_PORT:-80}:80"
+
+  # ===== 监控（可选，profile: jk）=====
+  # 默认 `docker compose up -d` 不启动这两个服务。
+  # 启动监控：docker compose --profile jk up -d
+  # 只停监控：docker compose stop prometheus grafana
+  #
+  # 首次启动前：
+  #   mkdir -p data/monitoring/prometheus data/monitoring/grafana
+  #   chown -R 65534:65534 data/monitoring/prometheus
+  #   chown -R 472:472     data/monitoring/grafana
+  #   在 .env 设置 GRAFANA_PASSWORD
+  prometheus:
+    image: prom/prometheus:v3.15.0
+    profiles: ["jk"]
+    restart: unless-stopped
+    volumes:
+      # 配置在仓库内的 monitoring/，运行时数据在 data/monitoring/
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./data/monitoring/prometheus:/prometheus
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=7d
+    ports:
+      # 只绑定回环，供 SSH 隧道调试；Grafana 走 Compose 内网访问
+      - "127.0.0.1:9090:9090"
+
+  grafana:
+    image: grafana/grafana:12.4.0
+    profiles: ["jk"]
+    restart: unless-stopped
+    environment:
+      # 必须先在 .env 设置，否则会落到 Grafana 默认弱口令。
+      # 这里不用 ${GRAFANA_PASSWORD:?...}：Compose 会对所有服务做变量插值，
+      # 即使没启用 profile，缺失变量也会让普通的 `docker compose up -d` 失败。
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_PASSWORD:-}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+      # 不要设置 GF_SERVER_HTTP_ADDR=127.0.0.1：
+      # 容器内绑回环后，Docker 端口映射（DNAT 到容器 eth0）访问不到。
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./data/monitoring/grafana:/var/lib/grafana
+    ports:
+      # 只绑定回环，公网 / 内网均不可直接访问，需 SSH 隧道：
+      #   ssh -L 3001:127.0.0.1:3001 root@<服务器>
+      - "127.0.0.1:3001:3000"

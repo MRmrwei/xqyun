@@ -14,7 +14,12 @@
 
 ```
 /xqyun/
-├── docker-compose.yml
+├── docker-compose.yml             # 业务 + 监控（监控用 profile jk 控制）
+├── monitoring/                    # Prometheus / Grafana 配置（可选）
+│   ├── prometheus.yml
+│   └── grafana/
+│       ├── provisioning/          # 数据源与看板自动装载
+│       └── dashboards/            # 看板 JSON
 ├── .env.example
 ├── init.sql
 ├── migration/
@@ -27,7 +32,8 @@
 │   │       ├── xqyun              # Linux Go 二进制
 │   │       └── config.yaml
 │   ├── uploads/                   # 素材（自动生成）
-│   └── logs/                      # 后端日志（自动生成）
+│   ├── logs/                      # 后端日志（自动生成）
+│   └── monitoring/                # Prometheus / Grafana 数据（自动生成）
 └── README.md
 ```
 
@@ -52,6 +58,59 @@ docker compose up -d
 - 健康检查：`http://服务器IP/ping`
 
 初始管理员 `admin` / `123456`，登录后请立即修改密码。
+
+## 监控（可选）
+
+Go 后端在 `/metrics` 暴露 Prometheus 指标（`xqyun_http_requests_total`、`xqyun_http_request_duration_seconds`、`xqyun_business_responses_total`）。Prometheus / Grafana 写在主 `docker-compose.yml` 里，用 `profiles: ["jk"]` 标成可选：不加 `--profile jk` 就不会启动，业务照常运行。
+
+### 首次启动
+
+```bash
+cd /xqyun
+
+# 1. 运行时数据目录，并交给容器内进程（Prometheus 65534，Grafana 472）
+mkdir -p data/monitoring/prometheus data/monitoring/grafana
+chown -R 65534:65534 data/monitoring/prometheus
+chown -R 472:472     data/monitoring/grafana
+
+# 2. 在 .env 里补 GRAFANA_PASSWORD
+
+# 3. 启动（业务 + 监控）
+docker compose --profile jk up -d
+
+# 不带监控、只起业务：
+# docker compose up -d
+```
+
+### 访问 Grafana
+
+Grafana 只绑定宿主机回环 `127.0.0.1:3001`，公网不可达，需要 SSH 隧道：
+
+```bash
+ssh -L 3001:127.0.0.1:3001 用户名@服务器IP
+# 浏览器打开 http://127.0.0.1:3001，账号 admin，密码为 .env 里的 GRAFANA_PASSWORD
+```
+
+数据源与看板由 `monitoring/grafana/provisioning/` 自动装载。
+
+### 日常操作
+
+```bash
+# 只重启监控
+docker compose restart prometheus grafana
+
+# 改完 monitoring/prometheus.yml 后
+docker compose restart prometheus
+
+# 停止监控（不要用 down：会连同 MySQL / Redis / 业务容器一起停掉）
+docker compose stop prometheus grafana
+```
+
+### 安全约束
+
+- `/metrics` 不挂在 `/api/v1` 下，Nginx 也不转发，只有 Compose 内网能访问。
+- backend 端口已改为 `127.0.0.1:8888:8888`，**不要改回 `8888:8888`**，否则 `/metrics` 与后端接口都会暴露到公网。
+- Prometheus / Grafana 的端口都只绑 `127.0.0.1`，不要改成 `0.0.0.0`。
 
 ## 连接数据库（图形客户端）
 

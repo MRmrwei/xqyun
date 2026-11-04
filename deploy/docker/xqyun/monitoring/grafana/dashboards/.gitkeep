@@ -1,0 +1,2 @@
+# 看板 JSON 存放目录（provisioning 自动加载）。
+# 第一期三个 QPS 面板调好后导出为 qps.json 放这里。
