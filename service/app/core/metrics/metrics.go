@@ -13,7 +13,7 @@ import (
 const UnmatchedRoute = "unmatched"
 
 var (
-	// 指标定义见 docs/监控方案.md 4.1。
+	// 三类指标分别记录：请求数（按路由 / 方法 / HTTP 状态码）、耗时（按路由分桶）、业务码（按路由 / code）。
 	httpRequestsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "xqyun_http_requests_total",
 		Help: "按路由、方法与 HTTP 状态码统计的请求数。",
