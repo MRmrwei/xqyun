@@ -87,3 +87,6 @@ dump-*.sql
 *.pfx
 id_rsa*
 id_ed25519*
+
+# 不上传git仓库（保留示例文件）
+nogit/
