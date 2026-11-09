@@ -126,5 +126,5 @@ export const settings: SiteSettings = {
   defaultLocale: 'zh',
   analytics: '',
   headCode: '<!-- 统计代码 / 自定义 head -->',
-  allowIndex: false
+  allowIndex: true
 }
