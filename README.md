@@ -222,6 +222,7 @@ deploy/docker/xqyun/data/
 | [Go 后端接口设计](./docs/Go后端接口设计.md) | 接口清单、请求响应、错误码 |
 | [MySQL 数据库表设计](./docs/MySQL数据库表设计.md) | 表结构与字段说明 |
 | [初版上线方案](./docs/初版上线方案.md) | 初版范围、接口顺序、建表清单 |
+| [权限控制方案](./docs/权限控制方案.md) | 后台 RBAC 设计（Casbin 纯 URL 策略），仅设计未实现 |
 | [运营人员使用手册](./docs/运营人员使用手册.docx) | 后台日常操作说明（Word） |
 | [压测报告](./docs/压测报告.md) | 性能测试结果与容量建议 |
 | [管理后台说明](./admin/README.md) | 后台功能与开发 |
@@ -244,7 +245,7 @@ deploy/docker/xqyun/data/
 尚未包含：
 
 - 新闻 / 产品 / 案例独立内容库与详情页
-- RBAC 角色权限
+- RBAC 角色权限（二期采用 Casbin，设计见 [权限控制方案](./docs/权限控制方案.md)）
 - 服务端图形验证码
 - 对象存储 / CDN / 正式 HTTPS
 - `GET /admin/me`

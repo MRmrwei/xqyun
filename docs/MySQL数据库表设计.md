@@ -40,10 +40,9 @@
 
 | 表名 | 作用 | 关键关系 |
 | --- | --- | --- |
-| `xqyun_users` | 后台账号 | 通过 `xqyun_user_roles` 关联角色 |
-| `xqyun_roles` | 角色定义 | 通过 `xqyun_role_permissions` 关联权限码 |
-| `xqyun_user_roles` | 用户与角色多对多 | `user_id` + `role_id` |
-| `xqyun_role_permissions` | 角色与权限码多对多 | `role_id` + `permission_code` |
+| `xqyun_users` | 后台账号 | 通过 `xqyun_casbin_rule` 的 `g` 规则关联角色 |
+| `xqyun_roles` | 角色定义（展示信息） | 权限关系在 `xqyun_casbin_rule` 的 `p` 规则中 |
+| `xqyun_casbin_rule` | Casbin 策略表 | `p`：角色 → URL 模板 → HTTP 方法；`g`：用户 → 角色 |
 | `xqyun_pages` | 页面主表，保存草稿与当前线上内容 | `translation_group_id` 配对中英文；`published_content` 为线上内容 |
 | `xqyun_contents` | 新闻 / 产品 / 案例统一内容表 | 保存草稿与当前线上内容；`published_content` 为线上快照 |
 | `xqyun_categories` | 内容分类 | `translation_group_id`、`parent_id` 自关联 |
@@ -90,10 +89,12 @@
 
 ### 3.2 `xqyun_roles` — 角色
 
+只保存角色的展示信息。用户与角色、角色与权限的**关系不存本表**，由 Casbin 写入 `xqyun_casbin_rule`（见 3.3）。`code` 创建后不可修改（策略按 `code` 关联）；`is_system = 1` 的内置角色不允许删除。
+
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
 | `id` | `BIGINT UNSIGNED` | 否 | 自增 | 主键 |
-| `code` | `VARCHAR(50)` | 否 | — | 角色编码，唯一，如 `editor`、`publisher` |
+| `code` | `VARCHAR(50)` | 否 | — | 角色编码，唯一，如 `editor`、`publisher`；写入后不可改 |
 | `name` | `VARCHAR(100)` | 否 | — | 角色名称 |
 | `description` | `VARCHAR(255)` | 是 | `NULL` | 说明 |
 | `is_system` | `TINYINT` | 否 | `0` | 是否内置角色，内置角色不允许删除 |
@@ -104,53 +105,55 @@
 
 - `UNIQUE KEY uk_code (code)`
 
-内置角色建议：
+内置角色：
 
 | code | 名称 | 权限 |
 | --- | --- | --- |
-| `super_admin` | 超级管理员 | 全部权限 |
+| `super_admin` | 超级管理员 | 全部权限（`/api/v1/admin/*` + `*`，一条通配） |
 | `publisher` | 发布管理员 | 编辑 + 发布 / 下架 |
 | `editor` | 内容编辑 | 编辑，不能发布 |
 | `viewer` | 只读 | 仅查看 |
 
+完整角色策略清单见 [权限控制方案](./权限控制方案.md) 5.2 与第 8 节。
+
 ---
 
-### 3.3 `xqyun_user_roles` — 用户角色关联
+### 3.3 `xqyun_casbin_rule` — Casbin 策略
 
-| 字段 | 类型 | 空 | 说明 |
-| --- | --- | --- | --- |
-| `user_id` | `BIGINT UNSIGNED` | 否 | 用户 ID |
-| `role_id` | `BIGINT UNSIGNED` | 否 | 角色 ID |
-| `created_at` | `BIGINT UNSIGNED` | 否 | `0` |
+后端权限判定使用 Casbin（`casbin/v3` + `gorm-adapter/v3`），策略存本表。**业务代码不要直接 SQL 增删规则**，统一走 Casbin API，保证进程内策略与数据库一致。
+
+| 字段 | 类型 | 空 | 默认 | 说明 |
+| --- | --- | --- | --- | --- |
+| `id` | `BIGINT UNSIGNED` | 否 | 自增 | 主键 |
+| `ptype` | `VARCHAR(100)` | 否 | `''` | 规则类型：`p` 角色→URL+方法，`g` 用户→角色 |
+| `v0` | `VARCHAR(100)` | 否 | `''` | `p`：角色 code；`g`：用户 ID |
+| `v1` | `VARCHAR(100)` | 否 | `''` | `p`：URL 路由模板；`g`：角色 code |
+| `v2` | `VARCHAR(100)` | 否 | `''` | `p`：HTTP 方法（`GET` / `POST` / `PUT` / `DELETE` / `*`） |
+| `v3` | `VARCHAR(100)` | 否 | `''` | 预留（如 domain） |
+| `v4` | `VARCHAR(100)` | 否 | `''` | 预留 |
+| `v5` | `VARCHAR(100)` | 否 | `''` | 预留 |
 
 索引：
 
-- `PRIMARY KEY (user_id, role_id)`
-- `KEY idx_role_id (role_id)`
+- `PRIMARY KEY (id)`
+- `UNIQUE KEY idx_xqyun_casbin_rule (ptype, v0, v1, v2, v3, v4, v5)`
+
+示例：
+
+| ptype | v0 | v1 | v2 | 含义 |
+| --- | --- | --- | --- | --- |
+| `p` | `super_admin` | `/api/v1/admin/*` | `*` | 超管拥有全部后台接口 |
+| `p` | `publisher` | `/api/v1/admin/pages/:id` | `PUT` | 发布管理员可保存页面草稿 |
+| `p` | `editor` | `/api/v1/admin/pages/:id` | `GET` | 内容编辑可查看页面详情 |
+| `g` | `1` | `super_admin` | | 用户 1（初始 admin）属于超管 |
+
+策略按「角色 + URL 路由模板 + HTTP 方法」存储，`v1` 必须与 `c.FullPath()` 完全一致（参数占位符写法也要一致）；超管用 `v1 = /api/v1/admin/*`、`v2 = *` 一条通配覆盖全部后台接口。完整模型、角色策略清单与前端对接方式见 [权限控制方案](./权限控制方案.md)。
+
+> 建表走 golang-migrate（表结构以迁移文件为准）。`gorm-adapter v3.41.0` 构造时默认 AutoMigrate：初始化前调用 `gormadapter.TurnOffAutoMigrate(db)` 关闭，再用 `gormadapter.NewAdapterByDBUseTableName(db, "", "xqyun_casbin_rule")`。adapter 默认索引名为 `idx_` + 表名，与上面的 `idx_xqyun_casbin_rule` 一致。
 
 ---
 
-### 3.4 `xqyun_role_permissions` — 角色权限
-
-权限码按 `资源:动作` 命名，后端中间件统一校验。
-
-| 字段 | 类型 | 空 | 说明 |
-| --- | --- | --- | --- |
-| `role_id` | `BIGINT UNSIGNED` | 否 | 角色 ID |
-| `permission_code` | `VARCHAR(100)` | 否 | 权限码 |
-| `created_at` | `BIGINT UNSIGNED` | 否 | `0` |
-
-索引：
-
-- `PRIMARY KEY (role_id, permission_code)`
-
-权限码示例：
-
-`page:read`、`page:edit`、`page:publish`、`content:edit`、`content:publish`、`media:upload`、`setting:edit`、`user:manage`、`audit:read`。
-
----
-
-### 3.5 登录会话（Redis，不建表）
+### 3.4 登录会话（Redis，不建表）
 
 刷新令牌不存 MySQL，使用 Redis 保存，key 自带 TTL：
 
@@ -167,7 +170,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.6 `xqyun_pages` — 页面主表
+### 3.5 `xqyun_pages` — 页面主表
 
 一个页面记录 = 一种语言 + 一个路径 + 当前草稿与当前线上内容。中英文页面通过 `translation_group_id` 配对，各自独立发布。
 
@@ -227,7 +230,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.7 `xqyun_contents` — 新闻 / 产品 / 案例
+### 3.6 `xqyun_contents` — 新闻 / 产品 / 案例
 
 统一内容表，用 `type` 区分类型，用 `locale` 区分语言。
 
@@ -289,7 +292,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.8 `xqyun_categories` — 内容分类
+### 3.7 `xqyun_categories` — 内容分类
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -314,7 +317,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.9 `xqyun_media` — 媒体库
+### 3.8 `xqyun_media` — 媒体库
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -341,7 +344,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.10 `xqyun_menus` — 菜单容器
+### 3.9 `xqyun_menus` — 菜单容器
 
 一个菜单代表顶部导航或底部导航。
 
@@ -360,7 +363,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.11 `xqyun_menu_items` — 菜单项
+### 3.10 `xqyun_menu_items` — 菜单项
 
 同一张表同时承载顶部菜单项和页脚栏目 / 链接。
 
@@ -391,7 +394,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.12 `xqyun_settings` — 全站设置
+### 3.11 `xqyun_settings` — 全站设置
 
 按 `key + locale` 存储，值统一用 JSON。
 
@@ -432,7 +435,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.13 `xqyun_form_submissions` — 表单留言
+### 3.12 `xqyun_form_submissions` — 表单留言
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -455,7 +458,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.14 `xqyun_redirects` — 跳转规则
+### 3.13 `xqyun_redirects` — 跳转规则
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -475,7 +478,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.15 `xqyun_audit_logs` — 操作审计
+### 3.14 `xqyun_audit_logs` — 操作审计
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -497,7 +500,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 
 ---
 
-### 3.16 `xqyun_publish_records` — 发布记录
+### 3.15 `xqyun_publish_records` — 发布记录
 
 | 字段 | 类型 | 空 | 默认 | 说明 |
 | --- | --- | --- | --- | --- |
@@ -519,7 +522,7 @@ value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expire
 ## 4. 关系与数据流
 
 ```
-xqyun_users ──< xqyun_user_roles >── xqyun_roles ──< xqyun_role_permissions
+xqyun_users ──< xqyun_casbin_rule(g) >── xqyun_roles ──< xqyun_casbin_rule(p)
 
 xqyun_pages(zh-CN) ── translation_group_id ── xqyun_pages(en)
 
@@ -556,19 +559,18 @@ xqyun_settings：按 key + locale 读取
 
 1. `xqyun_users`
 2. `xqyun_roles`
-3. `xqyun_user_roles`
-4. `xqyun_role_permissions`
-5. `xqyun_media`
-6. `xqyun_categories`
-7. `xqyun_contents`
-8. `xqyun_pages`
-9. `xqyun_menus`
-10. `xqyun_menu_items`
-11. `xqyun_settings`
-12. `xqyun_form_submissions`
-13. `xqyun_redirects`
-14. `xqyun_audit_logs`
-15. `xqyun_publish_records`
+3. `xqyun_casbin_rule`
+4. `xqyun_media`
+5. `xqyun_categories`
+6. `xqyun_contents`
+7. `xqyun_pages`
+8. `xqyun_menus`
+9. `xqyun_menu_items`
+10. `xqyun_settings`
+11. `xqyun_form_submissions`
+12. `xqyun_redirects`
+13. `xqyun_audit_logs`
+14. `xqyun_publish_records`
 
 外键不是必须。`published_content` 是 JSON 快照，不引用额外表。
 

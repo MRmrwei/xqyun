@@ -540,7 +540,9 @@ type AdminUser struct {
 
 ## 4. 管理后台接口
 
-后台接口统一要求登录，并在中间件中校验权限码。
+后台接口统一要求登录，并在中间件中做授权。认证由 `AdminAuth` 校验 Bearer Token（失败 `40100`）；授权由 `Permission` 中间件调用 Casbin 判定当前用户能否访问「`当前路由模板 + HTTP 方法`」（失败 `40300`）。**接口本身即权限对象**，没有独立的权限码；策略存 `xqyun_casbin_rule`，模型、角色策略清单与前端对接方式见 [权限控制方案](./权限控制方案.md)。
+
+> 当前只做认证、未做授权：所有后台接口只校验登录状态，`40300` 尚未被使用。二期接入 Casbin 后，未配置策略的角色访问对应接口会被拒绝；`super_admin` 由通配策略覆盖全部后台接口。`/admin/me`、`/admin/user/profile`、`/admin/user/password` 登录即可，不挂权限判定。
 
 ### 4.1 认证
 
@@ -561,6 +563,8 @@ type AdminUser struct {
 - Refresh Token 不放在响应体，通过 HttpOnly Cookie 下发；前端无法读取，刷新 / 退出时由浏览器自动携带。Cookie 名、Path、Secure、SameSite 由 `jwt.cookie` 配置。
 - Redis 会话的 key 与值都带 `token_type`，用于区分管理后台与前台用户。
 - 每个用户的刷新令牌哈希同时维护在 `xqyun:refresh:user:{token_type}:{user_id}`（Set，TTL 与刷新令牌一致），用于改密 / 停用账号时批量吊销。
+- `GET /admin/me` 返回 `AdminUser`：`roles` 取 Casbin 中该用户的角色；`permissions` 取 `GetImplicitPermissionsForUser` 的 `[角色, URL 模板, 方法]` 行，去掉角色列、拼成 `"METHOD URL"` 字符串（如 `"PUT /api/v1/admin/pages/:id"`）并去重，超管返回 `["*"]`；登录响应的 `user` 同样填充这两个字段。当前两者固定为空数组，接入 Casbin 后生效。
+- `GET /admin/me`、`PUT /admin/user/profile`、`PUT /admin/user/password` 属于本人自助操作，登录即可：路由注册在只挂 `AdminAuth` 的子组，不经过 Casbin 判定。
 
 ### 4.1.1 当前管理员资料与密码
 
@@ -578,16 +582,16 @@ type AdminUser struct {
 
 ### 4.2 页面
 
-| 方法 | 路径 | 作用 | 权限 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/admin/pages` | 页面列表，支持 `locale` / `status` / `keyword` / 分页 | `page:read` |
-| POST | `/api/v1/admin/pages` | 新建页面 | `page:edit` |
-| GET | `/api/v1/admin/pages/:id` | 页面详情（草稿） | `page:read` |
-| PUT | `/api/v1/admin/pages/:id` | 保存草稿（路径、名称、SEO、区块） | `page:edit` |
-| DELETE | `/api/v1/admin/pages/:id` | 软删除页面 | `page:edit` |
-| POST | `/api/v1/admin/pages/:id/translate` | 创建 / 获取另一语言配对草稿 | `page:edit` |
-| POST | `/api/v1/admin/pages/:id/publish` | 发布当前草稿，覆盖线上内容 | `page:publish` |
-| POST | `/api/v1/admin/pages/:id/unpublish` | 下架：状态改为未发布，清空线上内容，草稿保留 | `page:publish` |
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/api/v1/admin/pages` | 页面列表，支持 `locale` / `status` / `keyword` / 分页 |
+| POST | `/api/v1/admin/pages` | 新建页面 |
+| GET | `/api/v1/admin/pages/:id` | 页面详情（草稿） |
+| PUT | `/api/v1/admin/pages/:id` | 保存草稿（路径、名称、SEO、区块） |
+| DELETE | `/api/v1/admin/pages/:id` | 软删除页面 |
+| POST | `/api/v1/admin/pages/:id/translate` | 创建 / 获取另一语言配对草稿 |
+| POST | `/api/v1/admin/pages/:id/publish` | 发布当前草稿，覆盖线上内容 |
+| POST | `/api/v1/admin/pages/:id/unpublish` | 下架：状态改为未发布，清空线上内容，草稿保留 |
 
 保存草稿请求体：
 
@@ -657,19 +661,19 @@ type AdminUser struct {
 
 ### 4.3 内容与分类
 
-| 方法 | 路径 | 作用 | 权限 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/admin/contents` | 内容列表，支持类型 / 语言 / 状态 / 分类 / 关键词 | `content:read` |
-| POST | `/api/v1/admin/contents` | 新建内容 | `content:edit` |
-| GET | `/api/v1/admin/contents/:id` | 内容详情 | `content:read` |
-| PUT | `/api/v1/admin/contents/:id` | 保存内容 | `content:edit` |
-| DELETE | `/api/v1/admin/contents/:id` | 软删除 | `content:edit` |
-| POST | `/api/v1/admin/contents/:id/publish` | 发布内容，覆盖线上内容 | `content:publish` |
-| POST | `/api/v1/admin/contents/:id/unpublish` | 下架内容：状态改为未发布，清空线上内容 | `content:publish` |
-| GET | `/api/v1/admin/categories` | 分类列表 | `content:read` |
-| POST | `/api/v1/admin/categories` | 新建分类 | `content:edit` |
-| PUT | `/api/v1/admin/categories/:id` | 修改分类 | `content:edit` |
-| DELETE | `/api/v1/admin/categories/:id` | 删除分类 | `content:edit` |
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/api/v1/admin/contents` | 内容列表，支持类型 / 语言 / 状态 / 分类 / 关键词 |
+| POST | `/api/v1/admin/contents` | 新建内容 |
+| GET | `/api/v1/admin/contents/:id` | 内容详情 |
+| PUT | `/api/v1/admin/contents/:id` | 保存内容 |
+| DELETE | `/api/v1/admin/contents/:id` | 软删除 |
+| POST | `/api/v1/admin/contents/:id/publish` | 发布内容，覆盖线上内容 |
+| POST | `/api/v1/admin/contents/:id/unpublish` | 下架内容：状态改为未发布，清空线上内容 |
+| GET | `/api/v1/admin/categories` | 分类列表 |
+| POST | `/api/v1/admin/categories` | 新建分类 |
+| PUT | `/api/v1/admin/categories/:id` | 修改分类 |
+| DELETE | `/api/v1/admin/categories/:id` | 删除分类 |
 
 内容保存请求体：
 
@@ -761,13 +765,13 @@ type AdminUser struct {
 
 ### 4.5 菜单与站点设置
 
-| 方法 | 路径 | 作用 | 权限 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/admin/menus` | 菜单列表 | `setting:edit` |
-| GET | `/api/v1/admin/menus/:code` | 菜单详情与菜单项 | `setting:edit` |
-| PUT | `/api/v1/admin/menus/:code` | 整体保存菜单项（排序、显隐、文案、链接） | `setting:edit` |
-| GET | `/api/v1/admin/settings` | 站点设置 | `setting:edit` |
-| PUT | `/api/v1/admin/settings` | 保存站点设置 | `setting:edit` |
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/api/v1/admin/menus` | 菜单列表 |
+| GET | `/api/v1/admin/menus/:code` | 菜单详情与菜单项 |
+| PUT | `/api/v1/admin/menus/:code` | 整体保存菜单项（排序、显隐、文案、链接） |
+| GET | `/api/v1/admin/settings` | 站点设置 |
+| PUT | `/api/v1/admin/settings` | 保存站点设置 |
 
 菜单保存请求体：
 
@@ -826,13 +830,13 @@ type AdminUser struct {
 
 ### 4.6 表单留言
 
-| 方法 | 路径 | 作用 | 权限 |
-| --- | --- | --- | --- |
-| GET | `/api/v1/admin/submissions` | 留言列表，支持状态 / 表单 / 时间筛选 | `form:read` |
-| GET | `/api/v1/admin/submissions/:id` | 留言详情 | `form:read` |
-| PUT | `/api/v1/admin/submissions/:id/status` | 标记处理状态 | `form:edit` |
-| GET | `/api/v1/admin/submissions/export` | 导出 CSV | `form:read` |
-| GET | `/api/v1/admin/submissions/unread-count` | 待处理留言数量（后台侧边栏红点轮询） | `form:read` |
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET | `/api/v1/admin/submissions` | 留言列表，支持状态 / 表单 / 时间筛选 |
+| GET | `/api/v1/admin/submissions/:id` | 留言详情 |
+| PUT | `/api/v1/admin/submissions/:id/status` | 标记处理状态 |
+| GET | `/api/v1/admin/submissions/export` | 导出 CSV |
+| GET | `/api/v1/admin/submissions/unread-count` | 待处理留言数量（后台侧边栏红点轮询） |
 
 列表查询参数：
 
@@ -891,13 +895,21 @@ type AdminUser struct {
 
 ### 4.7 账号、角色与审计
 
-| 方法 | 路径 | 作用 | 权限 |
-| --- | --- | --- | --- |
-| GET / POST | `/api/v1/admin/users` | 账号列表 / 新建 | `user:manage` |
-| PUT / DELETE | `/api/v1/admin/users/:id` | 修改 / 停用账号 | `user:manage` |
-| GET / POST | `/api/v1/admin/roles` | 角色列表 / 新建 | `user:manage` |
-| PUT | `/api/v1/admin/roles/:id/permissions` | 更新角色权限 | `user:manage` |
-| GET | `/api/v1/admin/audit-logs` | 审计日志，支持操作人 / 动作 / 时间 | `audit:read` |
+| 方法 | 路径 | 作用 |
+| --- | --- | --- |
+| GET / POST | `/api/v1/admin/users` | 账号列表 / 新建 |
+| PUT / DELETE | `/api/v1/admin/users/:id` | 修改 / 停用账号 |
+| GET / POST | `/api/v1/admin/roles` | 角色列表 / 新建 |
+| PUT | `/api/v1/admin/roles/:id/permissions` | 更新角色权限 |
+| GET | `/api/v1/admin/audit-logs` | 审计日志，支持操作人 / 动作 / 时间 |
+
+说明：
+
+- 角色列表读 `xqyun_roles`，策略用 Casbin `GetFilteredPolicy` 聚合；新建角色写 `xqyun_roles` + `AddPolicies`，更新权限用 `RemoveFilteredPolicy` + `AddPolicies`，保存后 `LoadPolicy()`。
+- 更新角色权限的请求体是 URL + 方法列表，例如 `{"permissions":[{"path":"/api/v1/admin/pages/:id","method":"PUT"}]}`；`path` 必须是路由模板，与 `c.FullPath()` 完全一致。
+- 角色 `code` 创建后不可修改；`is_system = 1` 的内置角色不允许删除。删除自定义角色时先清理 `p` / `g` 规则再删角色行。
+- 分配用户角色走 Casbin 分组策略（`g, 用户 ID, 角色 code`），不建 `xqyun_user_roles` 表。
+- 权限变更应写审计日志（与 `audit-logs` 一起在二期实现）。
 
 ---
 
@@ -946,12 +958,12 @@ type AdminUser struct {
 
 - `GET /admin/me`
 - 内容库与分类（`render/content`、`contents`、`categories`）
-- RBAC 角色权限与审计日志
+- RBAC 角色权限（Casbin，设计见 [权限控制方案](./权限控制方案.md)）与审计日志
 - 服务端图形验证码、登录限流、表单提交 IP 频率限制
 
 建议实现顺序：
 
-1. 认证与用户 / 角色中间件
+1. 认证与用户 / 角色中间件（认证已完成；授权待接 Casbin）
 2. 页面 CRUD、草稿保存、直接发布
 3. `render/page` 聚合接口（前台最先依赖）
 4. 内容与分类 CRUD、`contents` / `render/content`
