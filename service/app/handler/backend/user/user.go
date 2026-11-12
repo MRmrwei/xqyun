@@ -14,6 +14,8 @@ import (
 	"suki/xqyun/app/dto"
 	"suki/xqyun/app/models"
 	userrepository "suki/xqyun/app/repository/user"
+	"suki/xqyun/app/services/adminauth"
+	authimpl "suki/xqyun/app/services/auth/impl"
 	userservice "suki/xqyun/app/services/user"
 	userimpl "suki/xqyun/app/services/user/impl"
 	sessionutil "suki/xqyun/app/utils/session"
@@ -91,9 +93,10 @@ func (u *UserController) ChangePassword(ctx context.Context, c *app.RequestConte
 
 	// 改密后删除当前登录会话，要求使用新密码重新登录。
 	// 其他设备上的会话会在 TTL 到期后失效，当前版本不做按用户批量踢下线。
-	sessionStore := sessionutil.New(c, u.App().Config().Session)
-	sessionStore.Clear()
-	if err := sessionStore.Save(); err != nil {
+	logoutService := adminauth.NewLogoutService(authimpl.NewAdminSessionLogout(
+		sessionutil.New(c, u.App().Config().Session),
+	))
+	if err := logoutService.Logout(ctx); err != nil {
 		hlog.CtxWarnf(ctx, "改密后清除登录会话失败：%v", err)
 	}
 	response.Success(c, nil)

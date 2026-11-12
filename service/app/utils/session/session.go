@@ -77,15 +77,10 @@ type Store struct {
 
 var _ auth.SessionStore = (*Store)(nil)
 
-// Session 返回当前请求的 hertz-contrib/sessions 会话。
-// 调用前必须在该路由上挂载 sessions.New(...)，否则 Default 会 panic。
-func Session(c *app.RequestContext) hertzsessions.Session {
-	return hertzsessions.Default(c)
-}
-
 // New 创建当前请求的会话适配器。
+// 调用前必须在该路由上挂载 sessions.New(...)，否则 hertzsessions.Default 会 panic。
 func New(c *app.RequestContext, cfg application.SessionConfig) *Store {
-	return NewWithSession(Session(c), cfg)
+	return NewWithSession(hertzsessions.Default(c), cfg)
 }
 
 // NewWithSession 用已经获取的会话创建适配器。
