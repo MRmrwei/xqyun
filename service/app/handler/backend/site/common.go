@@ -22,7 +22,7 @@ import (
 
 // newRenderCache 按配置创建前台渲染缓存；未启用时返回不读写 Redis 的空实现。
 func newRenderCache(app application.Application) *renderrepository.Cache {
-	cfg := app.RenderCache()
+	cfg := app.Config().RenderCache
 	if !cfg.Enabled {
 		return renderrepository.New(nil, 0)
 	}
@@ -48,17 +48,14 @@ func newSettingService(app application.Application) *siteservice.SettingService 
 	return siteservice.NewSettingService(settingrepository.New(app.DB()), newRenderCache(app))
 }
 
-// adminID 从 Access Token claims 读取当前管理员 ID。
-// 无法解析时返回 nil：记录仍会写入，只是没有操作人。
+// adminID 从登录会话读取当前管理员 ID。
+// 取不到时返回 nil：记录仍会写入，只是没有操作人。
 func adminID(c *app.RequestContext) *uint64 {
-	claims, ok := middleware.AdminClaimsFromContext(c)
-	if !ok {
+	identity, ok := middleware.AdminIdentityFromContext(c)
+	if !ok || identity.UserID == 0 {
 		return nil
 	}
-	id, err := strconv.ParseUint(strings.TrimSpace(claims.Subject), 10, 64)
-	if err != nil || id == 0 {
-		return nil
-	}
+	id := identity.UserID
 	return &id
 }
 

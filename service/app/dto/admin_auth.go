@@ -7,12 +7,10 @@ type AdminLoginRequest struct {
 }
 
 // AdminLoginResponse 是管理后台登录响应。
+// 会话票据由后端写入 HttpOnly Cookie，响应体只返回有效期与用户信息。
 type AdminLoginResponse struct {
-	AccessToken string `json:"access_token"`
-	// RefreshToken 不返回给客户端，由 handler 写入 HttpOnly Cookie。
-	RefreshToken string    `json:"-"`
-	ExpiresIn    int       `json:"expires_in"`
-	User         AdminUser `json:"user"`
+	ExpiresIn int       `json:"expires_in"`
+	User      AdminUser `json:"user"`
 }
 
 // AdminUser 是管理后台登录用户信息。

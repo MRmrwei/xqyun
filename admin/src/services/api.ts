@@ -2,10 +2,9 @@
  * 管理后台 HTTP 请求封装。
  *
  * - 默认请求 /api/v1，开发 / 预览环境由 Vite 代理到 Go 后端。
- * - 默认携带 Authorization: Bearer <accessToken>。
+ * - 登录状态由 HttpOnly Cookie 携带，同源请求自动发送，前端不读取登录凭证。
  * - 统一解析 { code, message, data }，code !== 0 时抛出 ApiError。
- * - 收到 40100 / 40101 时先用 HttpOnly Cookie 静默刷新一次 Access Token 并重试原请求；
- *   刷新失败才清除本地会话并跳转登录页。
+ * - 收到 40100 / 40101 时通知 auth 模块清除本地会话并跳转登录页。
  */
 
 const configuredBase = import.meta.env.VITE_API_BASE_URL
@@ -34,8 +33,6 @@ interface ApiEnvelope<T> {
 export type QueryParams = Record<string, string | number | boolean | null | undefined>
 
 export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
-  /** 是否自动携带 Access Token，默认 true。登录等公开接口传 false。 */
-  auth?: boolean
   /** 超时时间，毫秒，默认 15 秒。 */
   timeoutMs?: number
   /** 查询参数，自动拼接到 URL。 */
@@ -44,18 +41,13 @@ export interface ApiRequestOptions extends Omit<RequestInit, 'body'> {
   body?: unknown
 }
 
-interface ApiAuthProvider {
-  getAccessToken: () => string | null
-  /** 用 HttpOnly Cookie 换取新的 Access Token；刷新失败返回 null。 */
-  refreshAccessToken: () => Promise<string | null>
-  onUnauthorized: () => void
-}
+type UnauthorizedHandler = () => void
 
-let authProvider: ApiAuthProvider | null = null
+let unauthorizedHandler: UnauthorizedHandler | null = null
 
-/** 由 auth 模块注入 token 读取与 401 处理逻辑，避免 api 与 auth 循环依赖。 */
-export function configureApiAuth(provider: ApiAuthProvider | null): void {
-  authProvider = provider
+/** 由 auth 模块注入 401 处理逻辑，避免 api 与 auth 循环依赖。 */
+export function configureUnauthorizedHandler(handler: UnauthorizedHandler | null): void {
+  unauthorizedHandler = handler
 }
 
 function buildPath(path: string, query?: QueryParams): string {
@@ -99,16 +91,14 @@ export async function apiRequest<T>(
   path: string,
   options: ApiRequestOptions = {}
 ): Promise<T> {
-  return performRequest<T>(path, options, false)
+  return performRequest<T>(path, options)
 }
 
 async function performRequest<T>(
   path: string,
-  options: ApiRequestOptions,
-  retried: boolean
+  options: ApiRequestOptions
 ): Promise<T> {
   const {
-    auth = true,
     timeoutMs = DEFAULT_TIMEOUT_MS,
     query,
     body: rawBody,
@@ -123,13 +113,6 @@ async function performRequest<T>(
   const prepared = prepareBody(rawBody)
   if (prepared.isJson && !headers.has('Content-Type')) {
     headers.set('Content-Type', 'application/json')
-  }
-
-  if (auth) {
-    const token = authProvider?.getAccessToken()
-    if (token) {
-      headers.set('Authorization', `Bearer ${token}`)
-    }
   }
 
   const controller = new AbortController()
@@ -151,7 +134,7 @@ async function performRequest<T>(
   try {
     response = await fetch(`${API_BASE_URL}${buildPath(path, query)}`, {
       ...rest,
-      // Refresh Token 在 HttpOnly Cookie 中，需要浏览器自动携带。
+      // 登录会话在 HttpOnly Cookie 中，需要浏览器自动携带。
       credentials: rest.credentials ?? 'include',
       body: prepared.value,
       headers,
@@ -178,22 +161,14 @@ async function performRequest<T>(
   }
 
   if (!payload || typeof payload.code !== 'number') {
-    if (auth && response.status === 401) {
-      if (await retryAfterRefresh(retried)) {
-        return performRequest<T>(path, options, true)
-      }
-      authProvider?.onUnauthorized()
+    if (response.status === 401) {
+      unauthorizedHandler?.()
     }
     throw new ApiError(response.status, '服务器返回了无法解析的数据')
   }
 
-  if (auth && (UNAUTHORIZED_CODES.has(payload.code) || response.status === 401)) {
-    // Access Token 过期时先用刷新令牌换新 token，再重试一次原请求。
-    // 刷新由 auth 模块单飞（并发请求共享同一次刷新），这里只负责重试。
-    if (await retryAfterRefresh(retried)) {
-      return performRequest<T>(path, options, true)
-    }
-    authProvider?.onUnauthorized()
+  if (UNAUTHORIZED_CODES.has(payload.code) || response.status === 401) {
+    unauthorizedHandler?.()
   }
 
   if (payload.code !== 0) {
@@ -203,17 +178,6 @@ async function performRequest<T>(
   return payload.data as T
 }
 
-/** 调用注入的刷新方法；已经重试过或没有注入刷新能力时返回 false。 */
-async function retryAfterRefresh(retried: boolean): Promise<boolean> {
-  if (retried || !authProvider?.refreshAccessToken) return false
-  try {
-    const token = await authProvider.refreshAccessToken()
-    return Boolean(token)
-  } catch {
-    return false
-  }
-}
-
 export interface ApiDownloadResult {
   blob: Blob
   filename: string
@@ -221,28 +185,22 @@ export interface ApiDownloadResult {
 
 /**
  * 下载后端文件（当前用于留言 CSV 导出）。
- * 与 JSON 请求共用 Bearer、Cookie 与静默刷新逻辑，返回文件 Blob 和文件名。
+ * 与 JSON 请求共用登录会话（HttpOnly Cookie），返回文件 Blob 和文件名。
  */
 export async function apiDownload(
   path: string,
   options: { query?: QueryParams; timeoutMs?: number } = {}
 ): Promise<ApiDownloadResult> {
-  return performDownload(path, options, false)
+  return performDownload(path, options)
 }
 
 async function performDownload(
   path: string,
-  options: { query?: QueryParams; timeoutMs?: number },
-  retried: boolean
+  options: { query?: QueryParams; timeoutMs?: number }
 ): Promise<ApiDownloadResult> {
   const { query, timeoutMs = 30_000 } = options
   const headers = new Headers()
   headers.set('Accept', 'text/csv, application/json')
-
-  const token = authProvider?.getAccessToken()
-  if (token) {
-    headers.set('Authorization', `Bearer ${token}`)
-  }
 
   const controller = new AbortController()
   let timedOut = false
@@ -274,10 +232,7 @@ async function performDownload(
   if (!contentType.includes('text/csv')) {
     const payload = (await response.json().catch(() => null)) as ApiEnvelope<unknown> | null
     if (response.status === 401 || (payload && UNAUTHORIZED_CODES.has(payload.code))) {
-      if (!retried && (await retryAfterRefresh(retried))) {
-        return performDownload(path, options, true)
-      }
-      authProvider?.onUnauthorized()
+      unauthorizedHandler?.()
     }
     if (payload && typeof payload.code === 'number') {
       throw new ApiError(payload.code, payload.message || '导出失败，请稍后重试')

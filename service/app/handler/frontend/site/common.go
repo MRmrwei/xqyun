@@ -20,7 +20,7 @@ import (
 
 // newRenderCache 按配置创建前台渲染缓存；未启用时返回不读写 Redis 的空实现。
 func newRenderCache(app application.Application) *renderrepository.Cache {
-	cfg := app.RenderCache()
+	cfg := app.Config().RenderCache
 	if !cfg.Enabled {
 		return renderrepository.New(nil, 0)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"strconv"
-	"strings"
 
 	"github.com/cloudwego/hertz/pkg/app"
 	"github.com/cloudwego/hertz/pkg/common/hlog"
@@ -14,11 +13,10 @@ import (
 	"suki/xqyun/app/core/response"
 	"suki/xqyun/app/dto"
 	"suki/xqyun/app/models"
-	sessionrepository "suki/xqyun/app/repository/session"
 	userrepository "suki/xqyun/app/repository/user"
 	userservice "suki/xqyun/app/services/user"
 	userimpl "suki/xqyun/app/services/user/impl"
-	cookieutil "suki/xqyun/app/utils/cookie"
+	sessionutil "suki/xqyun/app/utils/session"
 	"suki/xqyun/middleware"
 )
 
@@ -79,44 +77,57 @@ func (u *UserController) ChangePassword(ctx context.Context, c *app.RequestConte
 		return
 	}
 
-	jwtConfig := u.App().JWT()
-	tokenType := "admin"
-	if client, ok := jwtConfig.Client("admin"); ok && client.TokenType != "" {
-		tokenType = client.TokenType
-	}
-	refreshToken, _ := cookieutil.RefreshValue(c, jwtConfig.Cookie)
-
 	err := userimpl.NewPasswordChanger(
 		userrepository.New(u.App().DB()),
-		sessionrepository.New(u.App().Redis()),
-		tokenType,
 	).ChangePassword(ctx, userservice.ChangePasswordInput{
 		UserID:          userID,
 		CurrentPassword: req.CurrentPassword,
 		NewPassword:     req.NewPassword,
-		RefreshToken:    refreshToken,
 	})
 	if err != nil {
 		fail(ctx, c, err)
 		return
 	}
 
-	// 改密后刷新令牌已全部吊销，清掉当前浏览器的 Cookie，要求重新登录。
-	cookieutil.ClearRefresh(c, jwtConfig.Cookie)
+	// 改密后删除当前登录会话，要求使用新密码重新登录。
+	// 其他设备上的会话会在 TTL 到期后失效，当前版本不做按用户批量踢下线。
+	sessionStore := sessionutil.New(c, u.App().Config().Session)
+	sessionStore.Clear()
+	if err := sessionStore.Save(); err != nil {
+		hlog.CtxWarnf(ctx, "改密后清除登录会话失败：%v", err)
+	}
 	response.Success(c, nil)
 }
 
-// currentUserID 从 Access Token claims 读取当前管理员 ID。
-func currentUserID(c *app.RequestContext) (uint64, bool) {
-	claims, ok := middleware.AdminClaimsFromContext(c)
+// Me 返回当前登录管理员资料。
+// GET /api/v1/admin/me
+func (u *UserController) Me(ctx context.Context, c *app.RequestContext) {
+	userID, ok := currentUserID(c)
 	if !ok {
+		response.Fail(c, response.CodeUnauthorized, "请先登录")
+		return
+	}
+
+	account, err := userrepository.New(u.App().DB()).FindByID(ctx, userID)
+	if errors.Is(err, userrepository.ErrNotFound) {
+		response.Fail(c, response.CodeNotFound, "账号不存在")
+		return
+	}
+	if err != nil {
+		hlog.CtxErrorf(ctx, "admin me: %v", err)
+		response.Fail(c, response.CodeInternal, "获取账号信息失败，请稍后重试")
+		return
+	}
+	response.Success(c, toAdminProfile(account))
+}
+
+// currentUserID 从登录会话读取当前管理员 ID。
+func currentUserID(c *app.RequestContext) (uint64, bool) {
+	identity, ok := middleware.AdminIdentityFromContext(c)
+	if !ok || identity.UserID == 0 {
 		return 0, false
 	}
-	id, err := strconv.ParseUint(strings.TrimSpace(claims.Subject), 10, 64)
-	if err != nil || id == 0 {
-		return 0, false
-	}
-	return id, true
+	return identity.UserID, true
 }
 
 // toAdminProfile 把账号模型转换为前台响应结构。

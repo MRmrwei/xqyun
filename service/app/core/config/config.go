@@ -1,6 +1,7 @@
 package config
 
 import (
+	"crypto/sha256"
 	"fmt"
 	"net"
 	"os"
@@ -23,6 +24,7 @@ type Config struct {
 	MySQL       MySQLConfig       `yaml:"mysql"`
 	Redis       RedisConfig       `yaml:"redis"`
 	JWT         JWTConfig         `yaml:"jwt"`
+	Session     SessionConfig     `yaml:"session"`
 	RenderCache RenderCacheConfig `yaml:"render_cache"`
 	Upload      UploadConfig      `yaml:"upload"`
 	Log         LogConfig         `yaml:"log"`
@@ -110,6 +112,17 @@ type JWTClientConfig struct {
 	RefreshTTL string `yaml:"refresh_ttl"`
 }
 
+// SessionConfig 描述管理后台登录会话（hertz-contrib/sessions + Redis）。
+// Cookie 签名密钥不单独配置，由 JWT_SECRET 派生，避免新增部署变量。
+type SessionConfig struct {
+	Name     string `yaml:"name"`
+	Path     string `yaml:"path"`
+	Domain   string `yaml:"domain"`
+	Secure   bool   `yaml:"secure"`
+	SameSite string `yaml:"same_site"`
+	TTL      string `yaml:"ttl"`
+}
+
 // RenderCacheConfig 描述前台渲染数据的 Redis 缓存。
 // 缓存内容：页面分片（locale + path）、导航分片、站点配置分片。
 type RenderCacheConfig struct {
@@ -185,10 +198,10 @@ func (c *Config) setDefaults() {
 		c.JWT.Issuer = "xiaoque-admin"
 	}
 	if c.JWT.Cookie.Name == "" {
-		c.JWT.Cookie.Name = "xqyun_admin_refresh"
+		c.JWT.Cookie.Name = "xqyun_frontend_refresh"
 	}
 	if c.JWT.Cookie.Path == "" {
-		c.JWT.Cookie.Path = "/api/v1/admin"
+		c.JWT.Cookie.Path = "/api/v1/frontend"
 	}
 	if c.JWT.Cookie.SameSite == "" {
 		c.JWT.Cookie.SameSite = "Lax"
@@ -196,21 +209,6 @@ func (c *Config) setDefaults() {
 	if c.JWT.Clients == nil {
 		c.JWT.Clients = make(map[string]JWTClientConfig)
 	}
-
-	admin := c.JWT.Clients["admin"]
-	if admin.Audience == "" {
-		admin.Audience = "admin-api"
-	}
-	if admin.TokenType == "" {
-		admin.TokenType = "admin"
-	}
-	if admin.AccessTTL == "" {
-		admin.AccessTTL = "15m"
-	}
-	if admin.RefreshTTL == "" {
-		admin.RefreshTTL = "168h"
-	}
-	c.JWT.Clients["admin"] = admin
 
 	frontend := c.JWT.Clients["frontend"]
 	if frontend.Audience == "" {
@@ -226,6 +224,18 @@ func (c *Config) setDefaults() {
 		frontend.RefreshTTL = "720h"
 	}
 	c.JWT.Clients["frontend"] = frontend
+	if c.Session.Name == "" {
+		c.Session.Name = "xqyun_admin_session"
+	}
+	if c.Session.Path == "" {
+		c.Session.Path = "/api/v1/admin"
+	}
+	if c.Session.SameSite == "" {
+		c.Session.SameSite = "Lax"
+	}
+	if c.Session.TTL == "" {
+		c.Session.TTL = "12h"
+	}
 	if c.RenderCache.TTL == "" {
 		c.RenderCache.TTL = "10m"
 	}
@@ -314,6 +324,15 @@ func (c *Config) applyEnv() error {
 		c.JWT.Clients[name] = client
 	}
 
+	setString(&c.Session.Name, "SESSION_COOKIE_NAME")
+	setString(&c.Session.Path, "SESSION_COOKIE_PATH")
+	setString(&c.Session.Domain, "SESSION_COOKIE_DOMAIN")
+	if err := setBool(&c.Session.Secure, "SESSION_COOKIE_SECURE"); err != nil {
+		return err
+	}
+	setString(&c.Session.SameSite, "SESSION_COOKIE_SAME_SITE")
+	setString(&c.Session.TTL, "SESSION_TTL")
+
 	if err := setBool(&c.RenderCache.Enabled, "RENDER_CACHE_ENABLED"); err != nil {
 		return err
 	}
@@ -395,14 +414,23 @@ func (c *Config) ApplicationConfig() (application.Config, error) {
 			RefreshTTL: refreshTTL,
 		}
 	}
-	if _, ok := clients["admin"]; !ok {
-		return application.Config{}, fmt.Errorf("config: jwt.clients.admin 未配置")
-	}
-
 	dsn := c.MySQL.dsnOverride
 	if dsn == "" {
 		dsn = c.MySQL.dsn()
 	}
+
+	sessionTTL, err := parseDuration(c.Session.TTL)
+	if err != nil {
+		return application.Config{}, fmt.Errorf("config: session.ttl: %w", err)
+	}
+	if sessionTTL <= 0 {
+		return application.Config{}, fmt.Errorf("config: session.ttl 必须大于 0")
+	}
+	if c.Session.Name == "" || c.Session.Path == "" {
+		return application.Config{}, fmt.Errorf("config: session.name / session.path 不能为空")
+	}
+	// 会话 Cookie 签名密钥从 JWT_SECRET 派生，避免新增部署变量，也不与 JWT 直接共用同一把密钥。
+	sessionSecret := sha256.Sum256([]byte("xqyun-admin-session:" + c.JWT.Secret))
 
 	renderCache := application.RenderCacheConfig{Enabled: c.RenderCache.Enabled}
 	if renderCache.Enabled {
@@ -441,6 +469,15 @@ func (c *Config) ApplicationConfig() (application.Config, error) {
 				Secure:   c.JWT.Cookie.Secure,
 				SameSite: c.JWT.Cookie.SameSite,
 			},
+		},
+		Session: application.SessionConfig{
+			Name:     c.Session.Name,
+			Path:     c.Session.Path,
+			Domain:   c.Session.Domain,
+			Secure:   c.Session.Secure,
+			SameSite: c.Session.SameSite,
+			TTL:      sessionTTL,
+			Secret:   sessionSecret[:],
 		},
 		RenderCache: renderCache,
 		Upload: application.UploadConfig{

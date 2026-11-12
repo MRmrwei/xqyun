@@ -3,25 +3,28 @@
  *
  * 已接 Go API：
  * - POST /api/v1/admin/auth/login
- * - POST /api/v1/admin/auth/refresh（HttpOnly Cookie 静默续期）
  * - POST /api/v1/admin/auth/logout
+ * - GET  /api/v1/admin/me
  * - PUT  /api/v1/admin/user/profile
  * - PUT  /api/v1/admin/user/password
  *
- * Access Token 保存在 localStorage；Refresh Token 由后端写入 HttpOnly Cookie，前端不可读取。
+ * 登录会话由后端写入 HttpOnly Cookie，前端不保存任何令牌；
+ * localStorage 只缓存用户展示信息，用于刷新页面时恢复界面。
  */
 import { ref } from 'vue'
 import type { AdminLoginResponse, AdminProfile, AdminUser } from '@/types/admin'
-import { ApiError, api, configureApiAuth } from '@/services/api'
-import { changeAdminPassword, updateProfile } from '@/services/userApi'
+import { ApiError, api, configureUnauthorizedHandler } from '@/services/api'
+import {
+  changeAdminPassword,
+  getCurrentAdmin,
+  updateProfile,
+  type ApiAdminProfile
+} from '@/services/userApi'
 
 export interface AuthSession {
   username: string
   name: string
   loggedInAt: string
-  accessToken: string
-  /** Access Token 过期时间，Unix 秒。 */
-  expiresAt: number
   user: AdminUser
 }
 
@@ -40,6 +43,7 @@ export const AUTH_STORAGE_KEY = 'xiaoque-admin-auth-v1'
 
 const MIN_PASSWORD_CHARS = 8
 const MAX_PASSWORD_BYTES = 72
+const UNAUTHORIZED_CODES = new Set([401, 40100, 40101])
 
 const DEFAULT_PROFILE: AdminProfile = {
   username: demoCredentials.username,
@@ -51,6 +55,8 @@ const DEFAULT_PROFILE: AdminProfile = {
 
 let memorySession: AuthSession | null = null
 let memoryProfile: AdminProfile | null = null
+/** 当前页面生命周期内是否已经向后端确认过会话仍然有效。 */
+let sessionVerified = false
 
 function readStorage<T>(key: string): T | null {
   try {
@@ -83,13 +89,7 @@ function readSession(): AuthSession | null {
   if (memorySession) return memorySession
 
   const parsed = readStorage<Partial<AuthSession>>(AUTH_STORAGE_KEY)
-  if (
-    !parsed ||
-    typeof parsed.accessToken !== 'string' ||
-    !parsed.accessToken ||
-    !parsed.user ||
-    typeof parsed.user.username !== 'string'
-  ) {
+  if (!parsed || !parsed.user || typeof parsed.user.username !== 'string') {
     return null
   }
 
@@ -104,8 +104,6 @@ function readSession(): AuthSession | null {
       typeof parsed.loggedInAt === 'string' && parsed.loggedInAt
         ? parsed.loggedInAt
         : new Date().toISOString(),
-    accessToken: parsed.accessToken,
-    expiresAt: typeof parsed.expiresAt === 'number' ? parsed.expiresAt : 0,
     user
   }
   memorySession = session
@@ -137,20 +135,13 @@ export const sessionRef = ref<AuthSession | null>(readSession())
 /** 当前管理员资料；侧边栏头像与账号页共用。 */
 export const profileRef = ref<AdminProfile>(readProfile())
 
-// 把 token 读取、静默刷新与 401 处理注入请求层，避免 api.ts 反向依赖 auth.ts。
-configureApiAuth({
-  getAccessToken: () => sessionRef.value?.accessToken ?? null,
-  refreshAccessToken: async () => {
-    const session = await refreshSession()
-    return session?.accessToken ?? null
-  },
-  onUnauthorized: () => {
-    clearSession()
-    if (typeof window === 'undefined') return
-    const current = window.location.hash.replace(/^#/, '') || '/pages'
-    if (!current.startsWith('/login')) {
-      window.location.hash = `#/login?redirect=${encodeURIComponent(current)}`
-    }
+// 401 时清除本地会话并跳转登录页。
+configureUnauthorizedHandler(() => {
+  clearSession()
+  if (typeof window === 'undefined') return
+  const current = window.location.hash.replace(/^#/, '') || '/pages'
+  if (!current.startsWith('/login')) {
+    window.location.hash = `#/login?redirect=${encodeURIComponent(current)}`
   }
 })
 
@@ -170,41 +161,38 @@ export function validateNewPassword(value: string): string | null {
   return null
 }
 
-/** 登录：调用 Go API，成功后保存 token 与用户信息。 */
+/** 登录：调用 Go API，会话写入 HttpOnly Cookie，本地只保存用户信息。 */
 export async function login(username: string, password: string): Promise<AuthSession> {
   const account = username.trim()
   if (!account || !password) {
     throw new Error('请输入用户名和密码')
   }
 
-  const data = await api.post<AdminLoginResponse>(
-    '/admin/auth/login',
-    { username: account, password },
-    { auth: false }
-  )
-  if (!data?.access_token || !data.user) {
+  const data = await api.post<AdminLoginResponse>('/admin/auth/login', {
+    username: account,
+    password
+  })
+  if (!data?.user) {
     throw new Error('登录响应格式不正确')
   }
 
   const user = normalizeUser(data.user, account)
-  const expiresIn = Number(data.expires_in)
   const session: AuthSession = {
     username: user.username,
     name: user.name,
     loggedInAt: new Date().toISOString(),
-    accessToken: data.access_token,
-    expiresAt: Math.floor(Date.now() / 1000) + (expiresIn > 0 ? expiresIn : 900),
     user
   }
 
   memorySession = session
   sessionRef.value = session
+  sessionVerified = true
   writeStorage(AUTH_STORAGE_KEY, session)
   seedProfileFromUser(user)
   return session
 }
 
-/** 统一补齐登录 / 刷新响应里的用户字段，避免后端缺字段导致界面空白。 */
+/** 统一补齐登录 / 当前用户响应里的用户字段，避免后端缺字段导致界面空白。 */
 function normalizeUser(raw: AdminUser, fallbackUsername: string): AdminUser {
   return {
     ...raw,
@@ -235,77 +223,79 @@ export function getSession(): AuthSession | null {
   return readSession()
 }
 
-/** 本地 Access Token 是否仍在有效期内；过期后由 refreshSession 尝试静默续期。 */
-export function isAuthenticated(): boolean {
-  const session = getSession()
-  if (!session) return false
-  return session.expiresAt > Math.floor(Date.now() / 1000)
-}
-
-let refreshPromise: Promise<AuthSession | null> | null = null
-
 /**
- * 使用 HttpOnly Cookie 刷新 Access Token。
- * 并发调用共享同一次请求；刷新令牌失效时清除本地会话并返回 null。
+ * 向后端确认当前 Cookie 会话仍然有效，并同步最新管理员资料。
+ * 同一页面生命周期内只校验一次；网络故障时保留本地会话，交给后续请求判断。
  */
-export function refreshSession(): Promise<AuthSession | null> {
-  if (refreshPromise) return refreshPromise
+export async function validateSession(): Promise<boolean> {
+  if (!sessionRef.value) return false
+  if (sessionVerified) return true
 
-  refreshPromise = performRefresh().finally(() => {
-    refreshPromise = null
-  })
-  return refreshPromise
+  try {
+    const profile = await getCurrentAdmin()
+    applyProfile(profile)
+    sessionVerified = true
+    return true
+  } catch (error) {
+    if (error instanceof ApiError && UNAUTHORIZED_CODES.has(error.code)) {
+      clearSession()
+      return false
+    }
+    return true
+  }
 }
 
-async function performRefresh(): Promise<AuthSession | null> {
-  try {
-    const data = await api.post<AdminLoginResponse>('/admin/auth/refresh', undefined, {
-      auth: false,
-      timeoutMs: 10_000
-    })
-    if (!data?.access_token || !data.user) return null
-
-    const user = normalizeUser(data.user, data.user.username)
-
-    const expiresIn = Number(data.expires_in)
-    const session: AuthSession = {
-      username: user.username,
-      name: user.name,
-      loggedInAt: sessionRef.value?.loggedInAt ?? new Date().toISOString(),
-      accessToken: data.access_token,
-      expiresAt: Math.floor(Date.now() / 1000) + (expiresIn > 0 ? expiresIn : 900),
-      user
-    }
-
-    memorySession = session
-    sessionRef.value = session
-    writeStorage(AUTH_STORAGE_KEY, session)
-    return session
-  } catch (error) {
-    // 只有服务端明确判定刷新令牌失效时才清除会话；网络 / 服务端故障保留会话，稍后可重试。
-    if (error instanceof ApiError && (error.code === 40100 || error.code === 40101 || error.code === 401)) {
-      clearSession()
-    }
-    return null
+/** 用后端资料刷新本地会话中的用户信息。 */
+function applyProfile(saved: ApiAdminProfile): void {
+  const profile: AdminProfile = {
+    username: saved.username,
+    name: saved.name,
+    email: saved.email,
+    mobile: saved.mobile,
+    avatar: saved.avatar
   }
+  memoryProfile = profile
+  profileRef.value = { ...profile }
+
+  const session = sessionRef.value
+  if (!session) return
+
+  const updated: AuthSession = {
+    ...session,
+    username: profile.username,
+    name: profile.name,
+    user: {
+      ...session.user,
+      id: saved.id,
+      username: profile.username,
+      name: profile.name,
+      email: profile.email,
+      mobile: profile.mobile,
+      avatar: profile.avatar
+    }
+  }
+  memorySession = updated
+  sessionRef.value = updated
+  writeStorage(AUTH_STORAGE_KEY, updated)
 }
 
 /** 清除本地登录会话，不发起网络请求。 */
 function clearSession(): void {
   memorySession = null
   sessionRef.value = null
+  sessionVerified = false
   removeStorage(AUTH_STORAGE_KEY)
 }
 
 /**
- * 退出登录：先让服务端吊销 HttpOnly Cookie 中的刷新令牌，再清除本地会话。
+ * 退出登录：先让服务端删除会话，再清除本地状态。
  * 网络或服务端异常时仍然清除本地状态，避免用户卡在已登录界面。
  */
 export async function logout(): Promise<void> {
   try {
-    await api.post('/admin/auth/logout', undefined, { auth: false, timeoutMs: 5_000 })
+    await api.post('/admin/auth/logout', undefined, { timeoutMs: 5_000 })
   } catch {
-    // 服务端不可用不影响本地退出；Cookie 中的令牌会自然过期。
+    // 服务端不可用不影响本地退出；服务端会话会自然过期。
   } finally {
     clearSession()
   }
@@ -332,40 +322,13 @@ export async function saveProfile(
     avatar: (input.avatar ?? '').trim()
   })
 
-  const next: AdminProfile = {
-    username: saved.username,
-    name: saved.name,
-    email: saved.email,
-    mobile: saved.mobile,
-    avatar: saved.avatar
-  }
-  memoryProfile = next
-  profileRef.value = { ...next }
-
-  const session = sessionRef.value
-  if (session) {
-    const updated: AuthSession = {
-      ...session,
-      name: next.name,
-      user: {
-        ...session.user,
-        name: next.name,
-        email: next.email,
-        mobile: next.mobile,
-        avatar: next.avatar
-      }
-    }
-    memorySession = updated
-    sessionRef.value = updated
-    writeStorage(AUTH_STORAGE_KEY, updated)
-  }
-
-  return { ...next }
+  applyProfile(saved)
+  return { ...profileRef.value }
 }
 
 /**
- * 修改密码：调用 Go 后端，成功后服务端会吊销该账号全部刷新令牌并清除 Cookie。
- * 本地会话同步清除，调用方提示用户重新登录。
+ * 修改密码：调用 Go 后端，成功后当前会话被删除，需要重新登录。
+ * 其他设备上的会话会在 TTL 到期后失效。
  */
 export async function changePassword(
   currentPassword: string,

@@ -13,7 +13,7 @@
 | 请求 / 响应格式 | `application/json; charset=utf-8` |
 | 时间格式 | Unix 时间戳（秒），JSON number，Go 侧使用 `int64` |
 | 语言参数 | `locale=zh-CN` / `locale=en`，默认 `zh-CN` |
-| 认证方式 | `Authorization: Bearer <access_token>` |
+| 认证方式 | 管理后台：HttpOnly 会话 Cookie `xqyun_admin_session`（hertz-contrib/sessions + Redis） |
 | ID 传输 | JSON 中统一用字符串，避免 JavaScript 对大整数的精度丢失 |
 | 分页参数 | `page` 从 1 开始，`page_size` 默认 20，最大 100 |
 
@@ -285,9 +285,9 @@ type LoginRequest struct {
 }
 
 type LoginResponse struct {
-    AccessToken string    `json:"access_token"`
-    ExpiresIn   int       `json:"expires_in"` // 秒
-    User        AdminUser `json:"user"`
+    // 登录会话通过 HttpOnly Cookie 下发，响应体不返回令牌。
+    ExpiresIn int       `json:"expires_in"` // 秒
+    User      AdminUser `json:"user"`
 }
 
 type AdminUser struct {
@@ -540,7 +540,7 @@ type AdminUser struct {
 
 ## 4. 管理后台接口
 
-后台接口统一要求登录，并在中间件中做授权。认证由 `AdminAuth` 校验 Bearer Token（失败 `40100`）；授权由 `Permission` 中间件调用 Casbin 判定当前用户能否访问「`当前路由模板 + HTTP 方法`」（失败 `40300`）。**接口本身即权限对象**，没有独立的权限码；策略存 `xqyun_casbin_rule`，模型、角色策略清单与前端对接方式见 [权限控制方案](./权限控制方案.md)。
+后台接口统一要求登录，并在中间件中做授权。认证由 `AdminSessionAuth` 从 `hertz-contrib/sessions` 会话读取当前管理员（失败 `40100`），非 GET / HEAD / OPTIONS 请求额外校验 `Origin`（失败 `40300`）；授权由 `Permission` 中间件调用 Casbin 判定当前用户能否访问「`当前路由模板 + HTTP 方法`」（失败 `40300`）。**接口本身即权限对象**，没有独立的权限码；策略存 `xqyun_casbin_rule`，模型、角色策略清单与前端对接方式见 [权限控制方案](./权限控制方案.md)。
 
 > 当前只做认证、未做授权：所有后台接口只校验登录状态，`40300` 尚未被使用。二期接入 Casbin 后，未配置策略的角色访问对应接口会被拒绝；`super_admin` 由通配策略覆盖全部后台接口。`/admin/me`、`/admin/user/profile`、`/admin/user/password` 登录即可，不挂权限判定。
 
@@ -548,35 +548,32 @@ type AdminUser struct {
 
 | 方法 | 路径 | 作用 | 请求 / 响应 |
 | --- | --- | --- | --- |
-| POST | `/api/v1/admin/auth/login` | 账号密码登录 | `LoginRequest` → `LoginResponse` |
-| POST | `/api/v1/admin/auth/refresh` | 刷新 Access Token | 从 HttpOnly Cookie 读取 Refresh Token → 新令牌与轮换 Cookie |
-| POST | `/api/v1/admin/auth/logout` | 吊销刷新令牌 | 从 HttpOnly Cookie 读取 Refresh Token → 空，并清除 Cookie |
+| POST | `/api/v1/admin/auth/login` | 账号密码登录 | `LoginRequest` → `LoginResponse`，会话写入 HttpOnly Cookie |
+| POST | `/api/v1/admin/auth/logout` | 退出登录 | 删除服务端会话并清除 Cookie |
 | GET | `/api/v1/admin/me` | 当前用户与权限 | → `AdminUser` |
 
 说明：
 
-- Access Token 有效期 15 分钟，刷新令牌 7 天。
-- 刷新令牌只存 SHA-256 哈希，写入 Redis（`xqyun:refresh:{token_type}:{hash}`，TTL 与 `refresh_ttl` 一致），刷新时轮换，旧令牌立即失效。
-- 登录失败需要限流，避免暴力破解。
-- Access Token 为 HS256 JWT，claims 包含 `sub` / `username` / `iss` / `aud` / `token_type` / `iat` / `exp`；现阶段管理后台使用 `aud = admin-api`、`token_type = admin`，前台预留 `frontend-api` / `frontend`。
-- JWT 参数按客户端分组：`jwt.clients.admin` / `jwt.clients.frontend`，分别配置 `audience` / `token_type` / `access_ttl` / `refresh_ttl`；`issuer` 与密钥全局共享。
-- Refresh Token 不放在响应体，通过 HttpOnly Cookie 下发；前端无法读取，刷新 / 退出时由浏览器自动携带。Cookie 名、Path、Secure、SameSite 由 `jwt.cookie` 配置。
-- Redis 会话的 key 与值都带 `token_type`，用于区分管理后台与前台用户。
-- 每个用户的刷新令牌哈希同时维护在 `xqyun:refresh:user:{token_type}:{user_id}`（Set，TTL 与刷新令牌一致），用于改密 / 停用账号时批量吊销。
+- 认证方式为 **Session**：`github.com/hertz-contrib/sessions` + Redis store，Cookie 名默认 `xqyun_admin_session`，Path `/api/v1/admin`，默认 TTL 12 小时，`HttpOnly`、`SameSite=Lax`。
+- `LoginResponse` 只返回 `expires_in` 与 `user`，不含 Access Token / Refresh Token。
+- 登录失败需要限流，避免暴力破解（当前未实现）。
+- Cookie 属性由 `config.yaml` 的 `session` 段配置（`name` / `path` / `domain` / `secure` / `same_site` / `ttl`），可用 `SESSION_COOKIE_*` / `SESSION_TTL` 覆盖；Cookie 签名密钥由 `JWT_SECRET` 派生。
+- 会话由 hertz-contrib/sessions 自行维护 Redis 记录，不再使用 `app/repository/session` 的刷新令牌表 / key。
+- 非 GET / HEAD / OPTIONS 的后台请求会校验 `Origin` 与 `Host` 是否一致，不匹配返回 `40300`。
 - `GET /admin/me` 返回 `AdminUser`：`roles` 取 Casbin 中该用户的角色；`permissions` 取 `GetImplicitPermissionsForUser` 的 `[角色, URL 模板, 方法]` 行，去掉角色列、拼成 `"METHOD URL"` 字符串（如 `"PUT /api/v1/admin/pages/:id"`）并去重，超管返回 `["*"]`；登录响应的 `user` 同样填充这两个字段。当前两者固定为空数组，接入 Casbin 后生效。
-- `GET /admin/me`、`PUT /admin/user/profile`、`PUT /admin/user/password` 属于本人自助操作，登录即可：路由注册在只挂 `AdminAuth` 的子组，不经过 Casbin 判定。
+- `GET /admin/me`、`PUT /admin/user/profile`、`PUT /admin/user/password` 属于本人自助操作，登录即可：路由注册在只挂会话认证的子组，不经过 Casbin 判定。
 
 ### 4.1.1 当前管理员资料与密码
 
 | 方法 | 路径 | 作用 |
 | --- | --- | --- |
 | PUT | `/api/v1/admin/user/profile` | 修改显示名称、邮箱、手机号、头像 |
-| PUT | `/api/v1/admin/user/password` | 修改密码；成功后吊销该账号全部刷新令牌并清除 Cookie |
+| PUT | `/api/v1/admin/user/password` | 修改密码；成功后删除当前会话并清除 Cookie |
 
 说明：
 
-- 用户 ID 从 Access Token 的 `sub` 读取，前端不传，避免越权修改其他账号。
-- 改密成功后所有设备的刷新令牌失效，当前浏览器 Cookie 被清除，前端需清除本地会话并跳回登录页；未过期的 Access Token 仍可能有效，最长 15 分钟。
+- 用户 ID 从登录会话读取，前端不传，避免越权修改其他账号。
+- 改密成功后当前浏览器的会话被删除、Cookie 被清除，前端需清除本地会话并跳回登录页；其他设备上的会话会在 TTL 到期后失效（当前未做按用户批量踢下线）。
 - 资料字段校验：显示名称必填且不超过 100 字；邮箱可空、不超过 255 字且需符合格式；手机号可空、不超过 32 字；头像不超过 2MB。
 - OpenAPI 文档：`docs/open-api/backend/admin-user-profile-openapi.yaml`。
 
@@ -937,18 +934,18 @@ type AdminUser struct {
 - `app/core/controller` 公共控制器
 - `app/core/bootstrap` 启动装配
 - `main.go` 启动与优雅退出
-- `POST /api/v1/admin/auth/login`：bcrypt 校验、HS256 JWT Access Token、刷新令牌写入 Redis
-- `app/services/auth`：认证接口、密码哈希、JWT / 刷新令牌工具
-- `app/services/auth/impl`：`AdminLogin` 数据库登录实现
+- `POST /api/v1/admin/auth/login`：bcrypt 校验、管理员信息写入 hertz-contrib/sessions 会话
+- `app/services/auth`：认证接口、密码哈希、保留给前台 JWT 的令牌工具
+- `app/services/auth/impl`：`AdminSession` 数据库登录实现
+- `app/utils/session`：hertz-contrib/sessions 适配、Redis store、Cookie 选项
 - `app/repository/user`：后台账号查询（`FindByUsername` / `FindByID`）
-- `app/repository/session`：Redis 登录会话（保存、按哈希查询、Lua 原子轮换、吊销）
-- `middleware/admin_auth.go`：管理后台 Bearer JWT 认证中间件
+- `middleware/admin_session_auth.go`：管理后台会话认证中间件（含 Origin 校验）
 - `hertz-contrib/logger/accesslog`：HTTP 访问日志，经 `hlog.CtxInfof` 输出
 
-业务接口（2026-10-22）：
+业务接口（2026-11-12）：
 
-- 后台认证：`POST /admin/auth/refresh`、`POST /admin/auth/logout`
-- 管理员资料与改密：`PUT /admin/user/profile`、`PUT /admin/user/password`（改密后吊销该账号全部刷新令牌）
+- 后台认证：`POST /admin/auth/login`、`POST /admin/auth/logout`、`GET /admin/me`
+- 管理员资料与改密：`PUT /admin/user/profile`、`PUT /admin/user/password`（改密后删除当前会话）
 - 站点编排：页面列表 / 新建 / 详情 / 保存草稿 / 删除 / 翻译配对 / 发布 / 下架，菜单列表 / 详情 / 整体保存，站点设置读取 / 保存
 - 表单留言：列表 / 详情 / 状态标记 / CSV 导出
 - 媒体素材：上传 / 列表 / 详情 / 重命名 / 单个删除 / 批量软删除（`xqyun_media`，本地磁盘 + Range 静态访问）
@@ -956,7 +953,6 @@ type AdminUser struct {
 
 尚未实现：
 
-- `GET /admin/me`
 - 内容库与分类（`render/content`、`contents`、`categories`）
 - RBAC 角色权限（Casbin，设计见 [权限控制方案](./权限控制方案.md)）与审计日志
 - 服务端图形验证码、登录限流、表单提交 IP 频率限制

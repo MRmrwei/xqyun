@@ -21,7 +21,7 @@ import (
 
 // newService 装配素材用例：先 NewFileUploader 创建上传能力，再嵌入 Service 并补上素材记录。
 func newService(app application.Application) (*mediaimpl.Service, error) {
-	cfg := app.Upload()
+	cfg := app.Config().Upload
 	storage, err := mediarepository.NewStorage(
 		cfg.Provider,
 		cfg.Dir,
@@ -38,16 +38,13 @@ func newService(app application.Application) (*mediaimpl.Service, error) {
 	return mediaimpl.New(mediarepository.New(app.DB()), uploader), nil
 }
 
-// currentUserID 从 Access Token claims 读取当前管理员 ID。
+// currentUserID 从登录会话读取当前管理员 ID。
 func currentUserID(c *app.RequestContext) *uint64 {
-	claims, ok := middleware.AdminClaimsFromContext(c)
-	if !ok {
+	identity, ok := middleware.AdminIdentityFromContext(c)
+	if !ok || identity.UserID == 0 {
 		return nil
 	}
-	id, err := strconv.ParseUint(strings.TrimSpace(claims.Subject), 10, 64)
-	if err != nil || id == 0 {
-		return nil
-	}
+	id := identity.UserID
 	return &id
 }
 

@@ -2,170 +2,118 @@ package impl
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"strings"
 	"time"
 
-	sessionrepository "suki/xqyun/app/repository/session"
+	"suki/xqyun/app/models"
 	userrepository "suki/xqyun/app/repository/user"
 	"suki/xqyun/app/services/auth"
 )
 
-// AdminSession 负责管理后台刷新令牌的轮换与退出登录。
-// 只处理刷新令牌，不校验 Access Token（过期后仍然需要能刷新）。
+// AdminSessionConfig 描述管理后台 Session 登录服务的参数。
+// TTL 由 HTTP 层写入会话 Cookie 与存储时使用，这里只用于组装响应中的 expires_in。
+type AdminSessionConfig struct {
+	TTL time.Duration
+}
+
+// AdminSession 基于 hertz-contrib/sessions 的会话存储实现管理后台登录、续期与退出。
+// 会话本身（Cookie、Redis 记录）由 HTTP 层适配的 auth.SessionStore 负责，
+// service 层只读写会话键，不关心具体存储实现。
 type AdminSession struct {
-	users      userrepository.UserRepository
-	sessions   sessionrepository.Repository
-	secret     []byte
-	issuer     string
-	audience   string
-	tokenType  string
-	accessTTL  time.Duration
-	refreshTTL time.Duration
-	now        func() time.Time
+	users userrepository.UserRepository
+	store auth.SessionStore
+	ttl   time.Duration
+	now   func() time.Time
 }
 
 var (
-	_ auth.TokenRefresher = (*AdminSession)(nil)
-	_ auth.Logouter       = (*AdminSession)(nil)
+	_ auth.Authenticator = (*AdminSession)(nil)
+	_ auth.Logouter      = (*AdminSession)(nil)
 )
 
-// NewAdminSession 创建管理后台刷新 / 退出登录服务。
+// NewAdminSession 创建管理后台 Session 认证服务。
 func NewAdminSession(
 	users userrepository.UserRepository,
-	sessions sessionrepository.Repository,
-	cfg AdminLoginConfig,
+	store auth.SessionStore,
+	cfg AdminSessionConfig,
 ) *AdminSession {
-	if cfg.Issuer == "" {
-		cfg.Issuer = auth.DefaultTokenIssuer
-	}
-	if cfg.Audience == "" {
-		cfg.Audience = auth.AudienceAdminAPI
-	}
-	if cfg.TokenType == "" {
-		cfg.TokenType = auth.TokenTypeAdmin
-	}
 	return &AdminSession{
-		users:      users,
-		sessions:   sessions,
-		secret:     append([]byte(nil), cfg.Secret...),
-		issuer:     cfg.Issuer,
-		audience:   cfg.Audience,
-		tokenType:  cfg.TokenType,
-		accessTTL:  cfg.AccessTTL,
-		refreshTTL: cfg.RefreshTTL,
-		now:        time.Now,
+		users: users,
+		store: store,
+		ttl:   cfg.TTL,
+		now:   time.Now,
 	}
 }
 
-// Refresh 校验刷新令牌、确认账号可用，然后轮换令牌并签发新的 Access Token。
-func (s *AdminSession) Refresh(
-	ctx context.Context,
-	credentials auth.RefreshCredentials,
-) (*auth.LoginResult, error) {
-	plain := strings.TrimSpace(credentials.RefreshToken)
-	if plain == "" {
-		return nil, auth.ErrInvalidRefreshToken
+// Login 校验账号密码，并把管理员信息写入当前请求的登录会话。
+func (s *AdminSession) Login(ctx context.Context, credentials auth.Credentials) (*auth.LoginResult, error) {
+	username := strings.TrimSpace(credentials.Username)
+	if username == "" || credentials.Password == "" {
+		return nil, auth.ErrInvalidCredentials
 	}
-	if s.users == nil || s.sessions == nil {
-		return nil, fmt.Errorf("认证服务：数据访问层未初始化")
+	if s.store == nil {
+		return nil, fmt.Errorf("认证服务：会话存储未初始化")
 	}
 
-	tokenHash := auth.HashRefreshToken(plain)
-	stored, err := s.sessions.FindByHash(ctx, tokenHash, s.tokenType)
-	if errors.Is(err, sessionrepository.ErrNotFound) {
-		return nil, auth.ErrInvalidRefreshToken
-	}
+	user, err := authenticateAdmin(ctx, s.users, username, credentials.Password)
 	if err != nil {
 		return nil, err
 	}
 
 	now := s.now()
-	// Redis 中已吊销的令牌会被删除，这里只做一次过期兜底。
-	if stored.ExpiresAt <= now.Unix() {
-		return nil, auth.ErrInvalidRefreshToken
-	}
-
-	user, err := s.users.FindByID(ctx, stored.UserID)
-	if errors.Is(err, userrepository.ErrNotFound) {
-		return nil, auth.ErrInvalidRefreshToken
-	}
-	if err != nil {
-		return nil, err
-	}
-	if user.Status != 1 {
-		return nil, auth.ErrAccountDisabled
-	}
-
-	accessToken, err := auth.SignAccessToken(s.secret, auth.TokenOptions{
-		Issuer:    s.issuer,
-		Audience:  s.audience,
-		TokenType: s.tokenType,
-		TTL:       s.accessTTL,
-	}, user.ID, user.Username, now)
-	if err != nil {
-		return nil, err
-	}
-	refreshPlain, refreshHash, err := auth.NewRefreshToken()
-	if err != nil {
+	ip := optionalString(credentials.IP, maxIPLength)
+	s.store.Set(auth.SessionKeyAdminUserID, user.ID)
+	s.store.Set(auth.SessionKeyAdminUsername, user.Username)
+	if err := s.store.Save(); err != nil {
 		return nil, err
 	}
 
-	nowUnix := now.Unix()
-	next := sessionrepository.Token{
-		UserID:    user.ID,
-		TokenHash: refreshHash,
-		TokenType: s.tokenType,
-		UserAgent: optionalString(credentials.UserAgent, maxUserAgentLength),
-		IP:        optionalString(credentials.IP, maxIPLength),
-		ExpiresAt: now.Add(s.refreshTTL).Unix(),
-		CreatedAt: nowUnix,
-	}
-
-	if err := s.sessions.Rotate(ctx, tokenHash, s.tokenType, next); err != nil {
-		if errors.Is(err, sessionrepository.ErrRefreshTokenRotated) {
-			return nil, auth.ErrInvalidRefreshToken
-		}
+	// 登录信息只用于展示；写入失败时清掉刚建立的会话，避免留下不一致的登录状态。
+	if err := persistSessionLoginState(ctx, s.users, s.store, user, now.Unix(), ip); err != nil {
 		return nil, err
 	}
 
 	return &auth.LoginResult{
 		Pair: &auth.TokenPair{
-			AccessToken:  accessToken,
-			RefreshToken: refreshPlain,
-			ExpiresIn:    int(s.accessTTL / time.Second),
+			// Session 模式没有令牌，凭证仅存在于 HttpOnly Cookie 中。
+			ExpiresIn: int(s.ttl / time.Second),
 		},
 		User: user,
 	}, nil
 }
 
-// Logout 吊销当前刷新令牌。
-// 未携带令牌或令牌已失效时同样返回成功，保证重复退出不会报错。
-func (s *AdminSession) Logout(ctx context.Context, credentials auth.LogoutCredentials) error {
-	plain := strings.TrimSpace(credentials.RefreshToken)
-	if plain == "" {
-		return nil
-	}
-	if s.sessions == nil {
-		return fmt.Errorf("认证服务：数据访问层未初始化")
-	}
-
-	if err := s.sessions.Revoke(
-		ctx,
-		auth.HashRefreshToken(plain),
-		s.tokenType,
-	); err != nil {
-		return err
-	}
-	return nil
+// NewAdminSessionLogout 创建只用于退出登录的 AdminSession，不需要用户仓库与 TTL 配置。
+func NewAdminSessionLogout(store auth.SessionStore) *AdminSession {
+	return &AdminSession{store: store, now: time.Now}
 }
 
-// optionalString 去除首尾空白并截断，空值返回 nil。
-func optionalString(value string, max int) *string {
-	value = truncate(strings.TrimSpace(value), max)
-	if value == "" {
-		return nil
+// Logout 清空并删除当前会话；会话本来不存在时同样返回成功（幂等）。
+func (s *AdminSession) Logout(_ context.Context) error {
+	if s.store == nil {
+		return fmt.Errorf("认证服务：会话存储未初始化")
 	}
-	return &value
+	s.store.Clear()
+	return s.store.Save()
+}
+
+// persistSessionLoginState 记录最近登录信息；写入失败时删除刚建立的会话。
+func persistSessionLoginState(
+	ctx context.Context,
+	users userrepository.UserRepository,
+	store auth.SessionStore,
+	user *models.User,
+	nowUnix int64,
+	ip *string,
+) error {
+	if err := users.UpdateLoginState(ctx, user.ID, nowUnix, ip); err != nil {
+		store.Clear()
+		_ = store.Save()
+		return err
+	}
+
+	user.LastLoginAt = nowUnix
+	user.LastLoginIP = ip
+	user.UpdatedAt = nowUnix
+	return nil
 }

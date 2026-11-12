@@ -2,13 +2,14 @@ package router
 
 import (
 	"github.com/cloudwego/hertz/pkg/route"
-	"suki/xqyun/middleware"
 
-	"suki/xqyun/app/core/application"
 	mediahandler "suki/xqyun/app/handler/backend/media"
 	sitehandler "suki/xqyun/app/handler/backend/site"
 	submissionhandler "suki/xqyun/app/handler/backend/submission"
 	userhandler "suki/xqyun/app/handler/backend/user"
+	"suki/xqyun/middleware"
+
+	"suki/xqyun/app/core/application"
 )
 
 // AdminRouters 注册管理后台接口。
@@ -17,23 +18,22 @@ func AdminRouters(
 	r *route.RouterGroup,
 	app application.Application,
 ) {
+
 	login := userhandler.NewLoginController(app)
-	refresh := userhandler.NewRefreshController(app)
 	logout := userhandler.NewLogoutController(app)
 	{
-		// 登录、刷新令牌与退出登录都不需要 Bearer Token：
-		// Access Token 过期后正是靠刷新令牌续期，退出时也可能已无有效 Access Token。
+		// 登录与退出都需要读写会话 Cookie。
 		r.POST("/auth/login", login.Login)
-		r.POST("/auth/refresh", refresh.Refresh)
 		r.POST("/auth/logout", logout.Logout)
 	}
 
-	// 需要 Bearer Token 的后台接口统一注册到 authorized 子组。
+	// 需要有效登录会话的后台接口统一注册到 authorized 子组。
 	authorized := r.Group("")
-	authorized.Use(middleware.NewAdminAuth(app).Handle)
+	authorized.Use(middleware.NewAdminSessionAuth().Handle)
 
-	// 当前管理员：资料与密码
+	// 当前管理员：资料、密码与 /me
 	users := userhandler.NewUserController(app)
+	authorized.GET("/me", users.Me)
 	authorized.PUT("/user/profile", users.UpdateProfile)
 	authorized.PUT("/user/password", users.ChangePassword)
 

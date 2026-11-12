@@ -29,11 +29,7 @@ func stringPtr(value string) *string {
 func TestLoginSuccess(t *testing.T) {
 	fake := &fakeAuthenticator{
 		result: &auth.LoginResult{
-			Pair: &auth.TokenPair{
-				AccessToken:  "jwt-token",
-				RefreshToken: "refresh-token",
-				ExpiresIn:    900,
-			},
+			Pair: &auth.TokenPair{ExpiresIn: 900},
 			User: &models.User{
 				ID:       7,
 				Username: "admin",
@@ -66,10 +62,8 @@ func TestLoginSuccess(t *testing.T) {
 		t.Fatalf("认证参数未正确传递：%#v", fake.received)
 	}
 
-	if response.AccessToken != "jwt-token" ||
-		response.RefreshToken != "refresh-token" ||
-		response.ExpiresIn != 900 {
-		t.Fatalf("令牌响应不正确：%#v", response)
+	if response.ExpiresIn != 900 {
+		t.Fatalf("ExpiresIn 不正确：%#v", response)
 	}
 	if response.User.ID != "7" ||
 		response.User.Username != "admin" ||
@@ -152,126 +146,35 @@ func TestLoginRejectsNilAuthenticator(t *testing.T) {
 	}
 }
 
-type fakeSession struct {
-	refreshResult   *auth.LoginResult
-	refreshErr      error
-	receivedRefresh auth.RefreshCredentials
-	refreshCalls    int
-
-	logoutErr      error
-	receivedLogout auth.LogoutCredentials
-	logoutCalls    int
+type fakeLogouter struct {
+	err   error
+	calls int
 }
 
-var _ auth.SessionManager = (*fakeSession)(nil)
-
-func (f *fakeSession) Refresh(_ context.Context, credentials auth.RefreshCredentials) (*auth.LoginResult, error) {
-	f.refreshCalls++
-	f.receivedRefresh = credentials
-	return f.refreshResult, f.refreshErr
+func (f *fakeLogouter) Logout(_ context.Context) error {
+	f.calls++
+	return f.err
 }
 
-func (f *fakeSession) Logout(_ context.Context, credentials auth.LogoutCredentials) error {
-	f.logoutCalls++
-	f.receivedLogout = credentials
-	return f.logoutErr
-}
-
-func TestRefreshSuccess(t *testing.T) {
-	session := &fakeSession{
-		refreshResult: &auth.LoginResult{
-			Pair: &auth.TokenPair{
-				AccessToken:  "new-jwt",
-				RefreshToken: "new-refresh",
-				ExpiresIn:    900,
-			},
-			User: &models.User{ID: 7, Username: "admin", Name: "小阙"},
-		},
-	}
-
-	response, err := NewSessionService(session).Refresh(context.Background(), RefreshInput{
-		RefreshToken: " refresh-token ",
-		UserAgent:    "test-agent",
-		IP:           "127.0.0.1",
-	})
-	if err != nil {
-		t.Fatalf("Refresh() 返回错误：%v", err)
-	}
-	if session.refreshCalls != 1 {
-		t.Fatalf("刷新服务调用次数 = %d，期望 1", session.refreshCalls)
-	}
-	if session.receivedRefresh.RefreshToken != "refresh-token" ||
-		session.receivedRefresh.UserAgent != "test-agent" ||
-		session.receivedRefresh.IP != "127.0.0.1" {
-		t.Fatalf("刷新参数未正确传递：%#v", session.receivedRefresh)
-	}
-	if response.AccessToken != "new-jwt" ||
-		response.RefreshToken != "new-refresh" ||
-		response.ExpiresIn != 900 ||
-		response.User.ID != "7" {
-		t.Fatalf("刷新响应不正确：%#v", response)
-	}
-}
-
-func TestRefreshRejectsEmptyToken(t *testing.T) {
-	session := &fakeSession{}
-	if _, err := NewSessionService(session).Refresh(context.Background(), RefreshInput{}); !errors.Is(err, ErrSessionExpired) {
-		t.Fatalf("应返回 ErrSessionExpired，实际 %v", err)
-	}
-	if session.refreshCalls != 0 {
-		t.Fatal("缺少刷新令牌时不应调用刷新服务")
-	}
-}
-
-func TestRefreshMapsAuthErrors(t *testing.T) {
-	cases := []struct {
-		name string
-		err  error
-		want *Error
-	}{
-		{name: "invalid refresh token", err: auth.ErrInvalidRefreshToken, want: ErrSessionExpired},
-		{name: "account disabled", err: auth.ErrAccountDisabled, want: ErrAccountDisabled},
-	}
-
-	for _, testCase := range cases {
-		t.Run(testCase.name, func(t *testing.T) {
-			_, err := NewSessionService(&fakeSession{refreshErr: testCase.err}).Refresh(context.Background(), RefreshInput{
-				RefreshToken: "refresh-token",
-			})
-			if !errors.Is(err, testCase.want) {
-				t.Fatalf("错误映射不正确：期望 %v，实际 %v", testCase.want, err)
-			}
-		})
-	}
-}
-
-func TestRefreshPassesThroughUnknownError(t *testing.T) {
-	unknown := errors.New("database unavailable")
-	if _, err := NewSessionService(&fakeSession{refreshErr: unknown}).Refresh(context.Background(), RefreshInput{
-		RefreshToken: "refresh-token",
-	}); !errors.Is(err, unknown) {
-		t.Fatalf("未知错误应原样返回，实际 %v", err)
-	}
-}
-
-func TestLogoutCallsSession(t *testing.T) {
-	session := &fakeSession{}
-	if err := NewSessionService(session).Logout(context.Background(), LogoutInput{
-		RefreshToken: " refresh-token ",
-	}); err != nil {
+func TestLogoutCallsService(t *testing.T) {
+	logouter := &fakeLogouter{}
+	if err := NewLogoutService(logouter).Logout(context.Background()); err != nil {
 		t.Fatalf("Logout() 返回错误：%v", err)
 	}
-	if session.logoutCalls != 1 || session.receivedLogout.RefreshToken != "refresh-token" {
-		t.Fatalf("退出登录参数未正确传递：%#v", session.receivedLogout)
+	if logouter.calls != 1 {
+		t.Fatalf("退出登录调用次数 = %d，期望 1", logouter.calls)
 	}
 }
 
-func TestLogoutIgnoresEmptyToken(t *testing.T) {
-	session := &fakeSession{}
-	if err := NewSessionService(session).Logout(context.Background(), LogoutInput{}); err != nil {
-		t.Fatalf("缺少刷新令牌时应幂等成功，实际 %v", err)
+func TestLogoutPassesThroughError(t *testing.T) {
+	unknown := errors.New("redis unavailable")
+	if err := NewLogoutService(&fakeLogouter{err: unknown}).Logout(context.Background()); !errors.Is(err, unknown) {
+		t.Fatalf("错误应原样返回，实际 %v", err)
 	}
-	if session.logoutCalls != 0 {
-		t.Fatal("缺少刷新令牌时不应调用退出登录服务")
+}
+
+func TestLogoutRejectsNilService(t *testing.T) {
+	if err := NewLogoutService(nil).Logout(context.Background()); err == nil {
+		t.Fatal("未注入退出登录服务时应报错")
 	}
 }

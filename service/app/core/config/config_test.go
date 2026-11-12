@@ -12,12 +12,8 @@ func TestJWTClientDefaults(t *testing.T) {
 	cfg := &Config{JWT: JWTConfig{Secret: testJWTSecret}}
 	cfg.setDefaults()
 
-	admin := cfg.JWT.Clients["admin"]
-	if admin.Audience != "admin-api" || admin.TokenType != "admin" {
-		t.Fatalf("admin 受众 / 类型不正确：%#v", admin)
-	}
-	if admin.AccessTTL != "15m" || admin.RefreshTTL != "168h" {
-		t.Fatalf("admin TTL 不正确：%#v", admin)
+	if _, ok := cfg.JWT.Clients["admin"]; ok {
+		t.Fatal("管理后台已改用 Session，不应再生成 admin JWT 客户端")
 	}
 
 	frontend := cfg.JWT.Clients["frontend"]
@@ -41,20 +37,6 @@ func TestApplicationConfigBuildsJWTClient(t *testing.T) {
 		t.Fatalf("ApplicationConfig() 返回错误：%v", err)
 	}
 
-	admin, ok := appCfg.JWT.Client("admin")
-	if !ok {
-		t.Fatal("admin 客户端未生成")
-	}
-	if admin.Audience != "admin-api" || admin.TokenType != "admin" {
-		t.Fatalf("admin 受众 / 类型不正确：%#v", admin)
-	}
-	if admin.AccessTTL != 15*time.Minute || admin.RefreshTTL != 168*time.Hour {
-		t.Fatalf("admin TTL 不正确：%#v", admin)
-	}
-	if string(admin.Secret) != testJWTSecret {
-		t.Fatal("admin 密钥未正确传递")
-	}
-
 	frontend, ok := appCfg.JWT.Client("frontend")
 	if !ok {
 		t.Fatal("frontend 客户端未生成")
@@ -62,27 +44,12 @@ func TestApplicationConfigBuildsJWTClient(t *testing.T) {
 	if frontend.AccessTTL != 30*time.Minute || frontend.RefreshTTL != 720*time.Hour {
 		t.Fatalf("frontend TTL 不正确：%#v", frontend)
 	}
+	if string(frontend.Secret) != testJWTSecret {
+		t.Fatal("frontend 密钥未正确传递")
+	}
 }
 
 func TestApplicationConfigRejectsInvalidJWT(t *testing.T) {
-	t.Run("missing admin client", func(t *testing.T) {
-		cfg := &Config{Redis: RedisConfig{Enabled: true}, JWT: JWTConfig{
-			Secret: testJWTSecret,
-			Issuer: "xiaoque-admin",
-			Clients: map[string]JWTClientConfig{
-				"frontend": {
-					Audience:   "frontend-api",
-					TokenType:  "frontend",
-					AccessTTL:  "30m",
-					RefreshTTL: "720h",
-				},
-			},
-		}}
-		if _, err := cfg.ApplicationConfig(); err == nil {
-			t.Fatal("缺少 admin 客户端时应返回错误")
-		}
-	})
-
 	t.Run("short secret", func(t *testing.T) {
 		cfg := &Config{
 			Redis: RedisConfig{Enabled: true},
@@ -99,11 +66,11 @@ func TestApplicationConfigRejectsInvalidJWT(t *testing.T) {
 			Secret: testJWTSecret,
 			Issuer: "xiaoque-admin",
 			Clients: map[string]JWTClientConfig{
-				"admin": {
-					Audience:   "admin-api",
-					TokenType:  "admin",
+				"frontend": {
+					Audience:   "frontend-api",
+					TokenType:  "frontend",
 					AccessTTL:  "invalid",
-					RefreshTTL: "168h",
+					RefreshTTL: "720h",
 				},
 			},
 		}}
@@ -122,8 +89,32 @@ func TestApplicationConfigRequiresRedis(t *testing.T) {
 	}
 }
 
+func TestSessionConfigDefaults(t *testing.T) {
+	cfg := &Config{
+		Redis: RedisConfig{Enabled: true},
+		JWT:   JWTConfig{Secret: testJWTSecret},
+	}
+	cfg.setDefaults()
+
+	appCfg, err := cfg.ApplicationConfig()
+	if err != nil {
+		t.Fatalf("ApplicationConfig() 返回错误：%v", err)
+	}
+
+	session := appCfg.Session
+	if session.Name != "xqyun_admin_session" || session.Path != "/api/v1/admin" {
+		t.Fatalf("Session Cookie 默认值不正确：%#v", session)
+	}
+	if session.TTL != 12*time.Hour {
+		t.Fatalf("Session TTL = %v，期望 12h", session.TTL)
+	}
+	if len(session.Secret) != 32 {
+		t.Fatalf("Session 签名密钥长度 = %d，期望 32", len(session.Secret))
+	}
+}
+
 func TestJWTClientEnvOverride(t *testing.T) {
-	t.Setenv("JWT_ADMIN_ACCESS_TTL", "5m")
+	t.Setenv("JWT_FRONTEND_ACCESS_TTL", "5m")
 	t.Setenv("JWT_FRONTEND_REFRESH_TTL", "168h")
 
 	cfg := &Config{JWT: JWTConfig{Secret: testJWTSecret}}
@@ -132,8 +123,8 @@ func TestJWTClientEnvOverride(t *testing.T) {
 		t.Fatalf("applyEnv() 返回错误：%v", err)
 	}
 
-	if got := cfg.JWT.Clients["admin"].AccessTTL; got != "5m" {
-		t.Fatalf("admin access_ttl = %q，期望 5m", got)
+	if got := cfg.JWT.Clients["frontend"].AccessTTL; got != "5m" {
+		t.Fatalf("frontend access_ttl = %q，期望 5m", got)
 	}
 	if got := cfg.JWT.Clients["frontend"].RefreshTTL; got != "168h" {
 		t.Fatalf("frontend refresh_ttl = %q，期望 168h", got)

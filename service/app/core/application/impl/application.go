@@ -13,11 +13,9 @@ import (
 
 // Application 是 application.Application 的默认实现。
 type Application struct {
-	db          *gorm.DB
-	redis       *redis.Client
-	jwt         application.JWTConfig
-	renderCache application.RenderCacheConfig
-	upload      application.UploadConfig
+	db     *gorm.DB
+	redis  *redis.Client
+	config application.Config
 }
 
 var _ application.Application = (*Application)(nil)
@@ -39,11 +37,9 @@ func New(ctx context.Context, cfg application.Config) (*Application, error) {
 	}
 
 	return &Application{
-		db:          db,
-		redis:       rdb,
-		jwt:         cfg.JWT,
-		renderCache: cfg.RenderCache,
-		upload:      cfg.Upload,
+		db:     db,
+		redis:  rdb,
+		config: cfg,
 	}, nil
 }
 
@@ -57,25 +53,16 @@ func (a *Application) Redis() *redis.Client {
 	return a.redis
 }
 
-// JWT 返回令牌签名配置；复制 map 与密钥，避免调用方修改内部状态。
-func (a *Application) JWT() application.JWTConfig {
-	config := a.jwt
-	config.Clients = make(map[string]application.JWTClientConfig, len(a.jwt.Clients))
-	for name, client := range a.jwt.Clients {
+// Config 返回应用配置拷贝；密钥与 map 都复制，避免调用方修改内部状态。
+func (a *Application) Config() application.Config {
+	config := a.config
+	config.Session.Secret = append([]byte(nil), a.config.Session.Secret...)
+	config.JWT.Clients = make(map[string]application.JWTClientConfig, len(a.config.JWT.Clients))
+	for name, client := range a.config.JWT.Clients {
 		client.Secret = append([]byte(nil), client.Secret...)
-		config.Clients[name] = client
+		config.JWT.Clients[name] = client
 	}
 	return config
-}
-
-// RenderCache 返回前台渲染缓存配置。
-func (a *Application) RenderCache() application.RenderCacheConfig {
-	return a.renderCache
-}
-
-// Upload 返回媒体上传与访问配置。
-func (a *Application) Upload() application.UploadConfig {
-	return a.upload
 }
 
 // Close 释放 DB 与 Redis 连接，并合并返回所有关闭错误。

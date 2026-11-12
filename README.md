@@ -66,7 +66,7 @@
 
 ### 管理后台
 
-- 登录、JWT 会话与静默续期
+- 登录、Session 会话（HttpOnly Cookie）与 `/admin/me` 启动校验
 - 页面内容、顶部导航、底部导航、站点配置
 - 三栏页面编辑器、iframe 实时预览、拖拽排序
 - 自动保存草稿、手动保存、发布 / 下架
@@ -78,7 +78,7 @@
 
 ### Go 后端
 
-- 管理后台认证与刷新令牌轮换
+- 管理后台认证（hertz-contrib/sessions + Redis）与前台内容渲染
 - 页面、菜单、站点配置 CRUD
 - 媒体素材上传与本地磁盘存储
 - 表单提交与留言管理
@@ -91,7 +91,7 @@
 | --- | --- |
 | 官网 | Nuxt 3、Vue 3、TypeScript、Nitro、`@nuxtjs/i18n` |
 | 管理后台 | Vue 3、Vite、Element Plus、Pinia、TipTap |
-| 后端 | Go 1.25、CloudWeGo Hertz、GORM、JWT |
+| 后端 | Go 1.25、CloudWeGo Hertz、GORM、hertz-contrib/sessions（JWT 保留给后续前台用户） |
 | 数据库 | MySQL 8 |
 | 缓存 / 会话 | Redis 7 |
 | 迁移 | golang-migrate |
@@ -248,13 +248,14 @@ deploy/docker/xqyun/data/
 - RBAC 角色权限（二期采用 Casbin，设计见 [权限控制方案](./docs/权限控制方案.md)）
 - 服务端图形验证码
 - 对象存储 / CDN / 正式 HTTPS
-- `GET /admin/me`
+- 前台用户登录（JWT 配置已预留）
 
 ## 安全说明
 
 - `.env`、数据库密码、`JWT_SECRET`、服务器地址等敏感信息不进入仓库
-- 后台 API 需要 Bearer Token
-- Refresh Token 使用 HttpOnly Cookie
+- 后台 API 使用 HttpOnly 会话 Cookie `xqyun_admin_session`，并非 Bearer Token
+- 会话 Cookie 默认 `Path=/api/v1/admin`、`SameSite=Lax`、`HttpOnly`
+- 非 GET / HEAD / OPTIONS 的后台请求会校验 `Origin`
 - 访问日志不记录 Authorization、Cookie 与请求体
 - 初始管理员账号为 `admin` / `123456`，首次登录后请立即修改
-- 生产环境请配置 HTTPS，并把 `JWT_COOKIE_SECURE` 设为 `true`
+- 生产环境请配置 HTTPS，并把 `SESSION_COOKIE_SECURE` 设为 `true`

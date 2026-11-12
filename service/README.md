@@ -10,7 +10,7 @@
 - CloudWeGo Hertz
 - GORM + MySQL 8
 - Redis 7（登录会话与渲染缓存）
-- JWT（HS256 Access Token + Redis Refresh Token）
+- hertz-contrib/sessions（管理后台登录会话；JWT 工具保留给后续前台用户）
 - golang-migrate（数据库迁移）
 - bcrypt（密码哈希）
 
@@ -23,7 +23,7 @@ app/repository/    数据访问：MySQL / Redis / 本地文件
 app/models/        GORM 模型
 app/dto/           接口请求 / 响应结构
 app/core/          配置、启动装配、日志、统一响应、公共控制器
-middleware/        管理后台 JWT 认证
+middleware/        管理后台会话认证
 router/            后台 / 前台路由注册
 migration/         数据库迁移（仓库根目录）
 ```
@@ -53,7 +53,7 @@ app/
 ├── repository/        数据访问
 ├── services/          业务用例
 └── utils/             Cookie、ULID 等工具
-middleware/            管理后台 Bearer JWT
+middleware/            管理后台会话认证
 router/                路由注册
 ```
 
@@ -61,7 +61,7 @@ router/                路由注册
 
 ### 管理后台（`/api/v1/admin`）
 
-- 认证：登录、刷新令牌、退出登录
+- 认证：登录、退出登录、当前管理员（`GET /admin/me`）
 - 管理员：修改资料、修改密码
 - 页面：列表、新建、详情、保存草稿、删除、翻译配对、发布、下架
 - 菜单：列表、详情、整体保存
@@ -90,7 +90,7 @@ router/                路由注册
 - 服务端口（默认 `:8888`）
 - MySQL 地址、数据库名、连接池
 - Redis 地址与 DB
-- JWT 客户端与 Cookie
+- 管理后台 Session Cookie 与 TTL（JWT 段保留给后续前台用户）
 - 渲染缓存 TTL
 - 上传目录、访问前缀、大小限制
 - 日志级别、目录与轮转
@@ -113,7 +113,8 @@ APP_ENV
 SERVER_ADDR
 MYSQL_HOST / MYSQL_PORT / MYSQL_DATABASE
 REDIS_ENABLED / REDIS_HOST / REDIS_PORT / REDIS_DB
-JWT_COOKIE_SECURE / JWT_COOKIE_SAME_SITE
+SESSION_COOKIE_SECURE / SESSION_COOKIE_SAME_SITE / SESSION_TTL
+JWT_COOKIE_SECURE / JWT_COOKIE_SAME_SITE（前台预留）
 UPLOAD_PROVIDER / UPLOAD_DIR / UPLOAD_URL_PREFIX / UPLOAD_PUBLIC_BASE_URL
 LOG_LEVEL / LOG_DIR
 ```
@@ -156,11 +157,11 @@ migrate -path ../migration \
 
 ## 认证与会话
 
-- 登录成功返回 Access Token，默认 15 分钟
-- Refresh Token 只存 Redis，首次登录通过 HttpOnly Cookie 下发
-- 刷新时轮换旧令牌，旧令牌立即失效
-- 修改密码后吊销该账号全部刷新令牌
-- 后台受保护接口统一经过 `middleware/admin_auth.go`
+- 管理后台使用 hertz-contrib/sessions + Redis，登录后写入 HttpOnly Cookie `xqyun_admin_session`（默认 TTL 12 小时）
+- 会话 Cookie 默认 Path `/api/v1/admin`、SameSite=Lax；签名密钥由 `JWT_SECRET` 派生
+- 后台受保护接口统一经过 `middleware/admin_session_auth.go`，非安全方法额外校验 Origin
+- 修改密码后删除当前会话；其他设备会话在 TTL 到期后失效
+- JWT 工具与 `jwt.clients.frontend` 配置保留给后续前台用户登录
 
 ## 渲染缓存
 

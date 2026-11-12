@@ -20,7 +20,7 @@ mysql:
   log_level: 2 # 1: silent, 2: error, 3: warn, 4: info
 
 redis:
-  # 登录会话（刷新令牌）存储在 Redis 中，必须启用；关闭后服务启动会失败。
+  # 管理后台登录会话存储在 Redis 中，必须启用；关闭后服务启动会失败。
   enabled: true
   host: "127.0.0.1"
   port: 6379
@@ -28,25 +28,31 @@ redis:
   pool_size: 10
 
 jwt:
+  # 管理后台已改用 Session；这里保留给后续前台用户登录使用。
   issuer: "xiaoque-auth"
   cookie:
-    name: "xqyun_admin_refresh"
-    path: "/api/v1/admin"
+    name: "xqyun_frontend_refresh"
+    path: "/api/v1/frontend"
     domain: ""
     # 生产环境必须为 true（HTTPS）；本地 HTTP 开发使用 false
     secure: false
     same_site: "Lax"
   clients:
-    admin:
-      audience: "admin-api"
-      token_type: "admin"
-      access_ttl: "15m"
-      refresh_ttl: "168h"
     frontend:
       audience: "frontend-api"
       token_type: "frontend"
       access_ttl: "30m"
       refresh_ttl: "720h"
+
+session:
+  # 管理后台登录会话（hertz-contrib/sessions + Redis）。
+  name: "xqyun_admin_session"
+  path: "/api/v1/admin"
+  domain: ""
+  # 生产环境必须为 true（HTTPS）；本地 HTTP 开发使用 false
+  secure: false
+  same_site: "Lax"
+  ttl: "12h"
 
 render_cache:
   # 前台渲染数据（页面 / 导航 / 站点配置）的 Redis 缓存。

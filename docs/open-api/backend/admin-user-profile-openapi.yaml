@@ -8,9 +8,9 @@ info:
     小鹊云 Go 后端（CloudWeGo Hertz）当前管理员资料与密码接口，对应管理后台右上角「管理员账号」页。
 
     通用约定：
-    - 所有响应 HTTP 状态码统一为 200，成功与失败通过响应体中的 `code` 判断：`0` 成功，`40000` 参数错误，`40100` 未登录 / 令牌无效，`40300` 无权限，`40400` 不存在，`40900` 资源冲突，`50000` 服务端错误。
-    - 用户 ID 由后端从 Access Token 的 `sub` 解析，前端不传，避免越权修改其他账号。
-    - 本组接口需要 `Authorization: Bearer <access_token>`；登录、刷新令牌与退出登录见 `admin-auth-session.yaml`。
+    - 所有响应 HTTP 状态码统一为 200，成功与失败通过响应体中的 `code` 判断：`0` 成功，`40000` 参数错误，`40100` 未登录，`40300` 无权限，`40400` 不存在，`40900` 资源冲突，`50000` 服务端错误。
+    - 用户 ID 由后端从登录会话解析，前端不传，避免越权修改其他账号。
+    - 本组接口需要携带 HttpOnly 会话 Cookie `xqyun_admin_session`；登录、退出与 `GET /admin/me` 见 `admin-auth-session.yaml`。
 servers:
   - url: http://127.0.0.1:8888
     description: 本地开发
@@ -31,7 +31,7 @@ paths:
         - `mobile` 可留空，最多 32 个字符。
         - `avatar` 为 data URL 或外部地址，可留空表示清空；上限 2MB。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -56,13 +56,14 @@ paths:
         校验当前密码后写入新的 bcrypt 哈希。
 
         修改成功后：
-        - 吊销该账号在 Redis 中的全部刷新令牌（所有设备都需要重新登录）；
-        - 清除当前浏览器的 Refresh Token Cookie；
-        - 当前 Access Token 在过期前仍可能有效，前端应立即清除本地会话并跳转登录页。
+        - 删除当前浏览器对应的 Redis 会话；
+        - 清除当前浏览器的会话 Cookie；
+        - 其他设备上的会话会在 TTL 到期后失效（当前未做按用户批量踢下线）；
+        - 前端应立即清除本地会话并跳转登录页。
 
         新密码至少 8 个字符，且不超过 bcrypt 的 72 字节上限。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -80,10 +81,11 @@ paths:
 
 components:
   securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
+    AdminSessionAuth:
+      type: apiKey
+      in: cookie
+      name: xqyun_admin_session
+      description: 登录成功时由服务端写入的 HttpOnly 会话 Cookie。
 
   schemas:
     ApiEnvelope:

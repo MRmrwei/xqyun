@@ -108,5 +108,5 @@ ssh -N -L 13306:127.0.0.1:3306 用户名@服务器IP
   docker compose restart backend frontend gateway
   ```
 - 数据都在 `data/mysql`、`data/redis`、`data/uploads`、`data/logs`，删除容器不会丢数据。
-- 开启 HTTPS 后把 `.env` 里的 `JWT_COOKIE_SECURE` 改为 `true`，并把 `UPLOAD_PUBLIC_BASE_URL` 改成 HTTPS 域名。
+- 开启 HTTPS 后把 `.env` 里的 `SESSION_COOKIE_SECURE` 改为 `true`，并把 `UPLOAD_PUBLIC_BASE_URL` 改成 HTTPS 域名。
 - 当前 Go 二进制为 **linux/amd64**；ARM 服务器需要重新编译。

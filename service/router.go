@@ -17,7 +17,7 @@ func customizedRegister(r *server.Hertz, app application.Application) {
 	r.GET("/ping", handler.NewPingController(app).Ping)
 
 	// 媒体文件静态访问，支持 Range 以便视频拖动进度。
-	router.RegisterUploadStatic(r, app.Upload())
+	router.RegisterUploadStatic(r, app.Config().Upload)
 
 	r1 := r.Group("/api/v1")
 	{
@@ -28,6 +28,7 @@ func customizedRegister(r *server.Hertz, app application.Application) {
 
 		adminr := r1.Group("/admin")
 		{
+			adminr.Use(middleware.NewAdminSession(app))
 			router.AdminRouters(adminr, app)
 		}
 

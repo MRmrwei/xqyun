@@ -41,11 +41,6 @@ var (
 		Code:    response.CodeForbidden,
 		Message: "账号已被禁用",
 	}
-	// ErrSessionExpired 表示刷新令牌缺失、无效、过期或已吊销，需要重新登录。
-	ErrSessionExpired = &Error{
-		Code:    response.CodeUnauthorized,
-		Message: "登录状态已失效，请重新登录",
-	}
 )
 
 // LoginInput 是登录用例的输入。
@@ -56,22 +51,10 @@ type LoginInput struct {
 	IP        string
 }
 
-// RefreshInput 是刷新令牌用例的输入。
-type RefreshInput struct {
-	RefreshToken string
-	UserAgent    string
-	IP           string
-}
-
-// LogoutInput 是退出登录用例的输入。
-type LogoutInput struct {
-	RefreshToken string
-}
-
-// Service 是管理后台认证用例服务，覆盖登录、刷新令牌与退出登录。
+// Service 是管理后台认证用例服务，覆盖登录与退出登录。
 type Service struct {
 	authenticator auth.Authenticator
-	session       auth.SessionManager
+	logouter      auth.Logouter
 }
 
 // NewLoginService 创建管理后台登录用例服务。
@@ -79,10 +62,9 @@ func NewLoginService(authenticator auth.Authenticator) *Service {
 	return &Service{authenticator: authenticator}
 }
 
-// NewSessionService 创建刷新令牌 / 退出登录用例服务。
-// 传入 *authimpl.AdminSession 这类同时实现刷新与退出的会话服务。
-func NewSessionService(session auth.SessionManager) *Service {
-	return &Service{session: session}
+// NewLogoutService 创建退出登录用例服务。
+func NewLogoutService(logouter auth.Logouter) *Service {
+	return &Service{logouter: logouter}
 }
 
 // Login 校验输入、调用认证服务，并返回可直接输出的登录响应。
@@ -117,56 +99,19 @@ func (s *Service) Login(ctx context.Context, input LoginInput) (*dto.AdminLoginR
 	return adminResponse(result), nil
 }
 
-// Refresh 校验刷新令牌并轮换，返回新的 Access Token 与用户信息。
-func (s *Service) Refresh(ctx context.Context, input RefreshInput) (*dto.AdminLoginResponse, error) {
-	refreshToken := strings.TrimSpace(input.RefreshToken)
-	if refreshToken == "" {
-		return nil, ErrSessionExpired
-	}
-	if s.session == nil {
-		return nil, fmt.Errorf("刷新令牌服务未初始化")
-	}
-
-	result, err := s.session.Refresh(ctx, auth.RefreshCredentials{
-		RefreshToken: refreshToken,
-		UserAgent:    input.UserAgent,
-		IP:           input.IP,
-	})
-	if err != nil {
-		switch {
-		case errors.Is(err, auth.ErrInvalidRefreshToken):
-			return nil, ErrSessionExpired
-		case errors.Is(err, auth.ErrAccountDisabled):
-			return nil, ErrAccountDisabled
-		default:
-			return nil, err
-		}
-	}
-	if result == nil || result.Pair == nil || result.User == nil {
-		return nil, fmt.Errorf("刷新令牌服务返回了空结果")
-	}
-	return adminResponse(result), nil
-}
-
-// Logout 吊销当前刷新令牌；未携带令牌时直接视为成功。
-func (s *Service) Logout(ctx context.Context, input LogoutInput) error {
-	refreshToken := strings.TrimSpace(input.RefreshToken)
-	if refreshToken == "" {
-		return nil
-	}
-	if s.session == nil {
+// Logout 删除当前登录会话；会话本来不存在时同样成功。
+func (s *Service) Logout(ctx context.Context) error {
+	if s.logouter == nil {
 		return fmt.Errorf("退出登录服务未初始化")
 	}
-	return s.session.Logout(ctx, auth.LogoutCredentials{RefreshToken: refreshToken})
+	return s.logouter.Logout(ctx)
 }
 
-// adminResponse 把认证结果组装为登录 / 刷新共用的响应 DTO。
+// adminResponse 把认证结果组装为登录响应 DTO。
 func adminResponse(result *auth.LoginResult) *dto.AdminLoginResponse {
 	user := result.User
 	return &dto.AdminLoginResponse{
-		AccessToken:  result.Pair.AccessToken,
-		RefreshToken: result.Pair.RefreshToken,
-		ExpiresIn:    result.Pair.ExpiresIn,
+		ExpiresIn: result.Pair.ExpiresIn,
 		User: dto.AdminUser{
 			ID:          strconv.FormatUint(user.ID, 10),
 			Username:    user.Username,

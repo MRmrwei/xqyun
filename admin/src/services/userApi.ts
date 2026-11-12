@@ -1,8 +1,8 @@
 /**
  * 当前管理员资料与密码接口封装。
  *
- * 路径相对于 API_BASE_URL（默认 /api/v1），请求层自动携带 Bearer Token 并处理静默刷新。
- * 用户 ID 由后端从 Access Token 解析，前端不传。
+ * 路径相对于 API_BASE_URL（默认 /api/v1），请求层自动携带 HttpOnly 会话 Cookie。
+ * 用户 ID 由后端从登录会话解析，前端不传。
  */
 
 import { api } from '@/services/api'
@@ -22,6 +22,11 @@ export interface ApiUpdateProfileRequest {
   email: string
   mobile: string
   avatar: string
+}
+
+/** GET /api/v1/admin/me 的响应 data；用于校验会话并同步最新资料。 */
+export function getCurrentAdmin(): Promise<ApiAdminProfile> {
+  return api.get<ApiAdminProfile>('/admin/me')
 }
 
 export function updateProfile(body: ApiUpdateProfileRequest): Promise<ApiAdminProfile> {

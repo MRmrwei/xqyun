@@ -9,7 +9,7 @@ import LoginSettingsView from '@/views/LoginSettingsView.vue'
 import AccountSettingsView from '@/views/AccountSettingsView.vue'
 import LoginView from '@/views/LoginView.vue'
 import NotFoundView from '@/views/NotFoundView.vue'
-import { getSession, isAuthenticated, refreshSession } from '@/services/auth'
+import { getSession, validateSession } from '@/services/auth'
 
 const router = createRouter({
   history: createWebHashHistory(),
@@ -80,13 +80,12 @@ const router = createRouter({
 
 /**
  * 判断当前是否已登录。
- * Access Token 过期时尝试用 HttpOnly Cookie 静默刷新一次；
- * 没有本地会话时不发刷新请求，避免未登录用户打开登录页也要等待接口。
+ * 有本地用户信息时向后端 /admin/me 确认一次 Cookie 会话仍然有效；
+ * 没有本地会话时直接进入登录页，避免未登录用户多等一次请求。
  */
 async function ensureAuthenticated(): Promise<boolean> {
-  if (isAuthenticated()) return true
   if (!getSession()) return false
-  return (await refreshSession()) !== null
+  return validateSession()
 }
 
 router.beforeEach(async (to) => {

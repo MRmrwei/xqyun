@@ -32,13 +32,11 @@ var (
 )
 
 // ChangePasswordInput 是修改管理员密码入参。
-// UserID 来自 Access Token 的 sub，由控制器解析后传入，不接受前端指定。
-// RefreshToken 是当前请求 Cookie 中的刷新令牌，改密成功后一并吊销。
+// UserID 来自登录会话，由控制器解析后传入，不接受前端指定。
 type ChangePasswordInput struct {
 	UserID          uint64
 	CurrentPassword string
 	NewPassword     string
-	RefreshToken    string
 }
 
 // UpdateProfileInput 是修改管理员资料入参。

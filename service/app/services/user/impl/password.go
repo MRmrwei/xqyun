@@ -7,9 +7,6 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/cloudwego/hertz/pkg/common/hlog"
-
-	sessionrepository "suki/xqyun/app/repository/session"
 	userrepository "suki/xqyun/app/repository/user"
 	"suki/xqyun/app/services/auth"
 	"suki/xqyun/app/services/user"
@@ -20,26 +17,17 @@ const minPasswordRunes = 8
 
 // PasswordChanger 是 user.PasswordChanger 的实现。
 type PasswordChanger struct {
-	users     userrepository.UserRepository
-	sessions  sessionrepository.Repository
-	tokenType string
-	now       func() time.Time
+	users userrepository.UserRepository
+	now   func() time.Time
 }
 
 var _ user.PasswordChanger = (*PasswordChanger)(nil)
 
 // NewPasswordChanger 创建修改密码用例。
-// tokenType 与管理后台 JWT 的 token_type 一致（admin），用于定位 Redis 会话。
-func NewPasswordChanger(
-	users userrepository.UserRepository,
-	sessions sessionrepository.Repository,
-	tokenType string,
-) *PasswordChanger {
+func NewPasswordChanger(users userrepository.UserRepository) *PasswordChanger {
 	return &PasswordChanger{
-		users:     users,
-		sessions:  sessions,
-		tokenType: tokenType,
-		now:       time.Now,
+		users: users,
+		now:   time.Now,
 	}
 }
 
@@ -82,25 +70,5 @@ func (s *PasswordChanger) ChangePassword(
 		return err
 	}
 
-	s.revokeSessions(ctx, input)
 	return nil
-}
-
-// revokeSessions 吊销当前令牌与该用户的全部刷新令牌，强制所有设备重新登录。
-// 密码已经修改成功，这里失败只记日志：用户可以先用新密码重新登录，
-// 未吊销的会话也会在 refresh_ttl（7 天）后自然失效。
-func (s *PasswordChanger) revokeSessions(ctx context.Context, input user.ChangePasswordInput) {
-	if s.sessions == nil {
-		return
-	}
-
-	if token := input.RefreshToken; token != "" {
-		hash := auth.HashRefreshToken(token)
-		if err := s.sessions.Revoke(ctx, hash, s.tokenType); err != nil {
-			hlog.CtxWarnf(ctx, "改密后吊销当前刷新令牌失败：%v", err)
-		}
-	}
-	if err := s.sessions.RevokeByUser(ctx, input.UserID, s.tokenType); err != nil {
-		hlog.CtxWarnf(ctx, "改密后吊销用户全部刷新令牌失败：%v", err)
-	}
 }

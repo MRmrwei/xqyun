@@ -31,9 +31,8 @@ export interface AdminUser {
   permissions: string[]
 }
 
-/** POST /api/v1/admin/auth/login 的响应 data；Refresh Token 通过 HttpOnly Cookie 下发。 */
+/** POST /api/v1/admin/auth/login 的响应 data；登录会话通过 HttpOnly Cookie 下发。 */
 export interface AdminLoginResponse {
-  access_token: string
   expires_in: number
   user: AdminUser
 }

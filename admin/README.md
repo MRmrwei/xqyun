@@ -20,10 +20,10 @@
 
 - 账号密码登录，调用 Go 后端 `/api/v1/admin/auth/login`
 - 前端图形验证码（可在基础设置关闭）
-- Access Token 本地保存，Refresh Token 由后端写入 HttpOnly Cookie
-- Access Token 过期时静默刷新并重试原请求
+- 登录会话由后端写入 HttpOnly Cookie `xqyun_admin_session`，前端不保存令牌
+- 刷新页面时调用 `GET /admin/me` 校验会话；接口返回 `40100` 时跳回登录页
 - 管理员资料、头像、修改密码
-- 修改密码后服务端吊销全部刷新令牌，需要重新登录
+- 修改密码后当前会话被删除，需要重新登录
 
 ### 站点编排
 

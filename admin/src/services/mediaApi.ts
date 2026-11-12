@@ -1,7 +1,7 @@
 /**
  * 媒体素材接口封装（视频 / 图片）。
  *
- * 上传走 multipart/form-data，请求层自动携带 Bearer Token 并处理静默刷新。
+ * 上传走 multipart/form-data，请求层自动携带 HttpOnly 登录会话。
  * kind 作为分类字段保留，后续可扩展其他素材类型。
  */
 

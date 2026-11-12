@@ -1,7 +1,7 @@
 /**
  * 站点编排（页面内容 / 顶部导航 / 底部导航 / 站点配置）Go API 封装。
  *
- * 路径相对于 API_BASE_URL（默认 /api/v1），请求层自动携带 Bearer Token 并处理静默刷新。
+ * 路径相对于 API_BASE_URL（默认 /api/v1），请求层自动携带 HttpOnly 登录会话。
  */
 
 import { api, type QueryParams } from '@/services/api'

@@ -13,6 +13,7 @@ type Config struct {
 	DB          DBConfig
 	Redis       RedisConfig
 	JWT         JWTConfig
+	Session     SessionConfig
 	RenderCache RenderCacheConfig
 	Upload      UploadConfig
 }
@@ -34,6 +35,21 @@ type RenderCacheConfig struct {
 	Enabled bool
 	// TTL 是缓存有效期，作为失效逻辑漏删时的兜底。
 	TTL time.Duration
+}
+
+// SessionConfig 描述管理后台登录会话（hertz-contrib/sessions）。
+type SessionConfig struct {
+	// Name 是会话 Cookie 名。
+	Name string
+	// Path / Domain / Secure / SameSite 是 Cookie 属性。
+	Path     string
+	Domain   string
+	Secure   bool
+	SameSite string
+	// TTL 是会话有效期，Cookie 与 Redis 记录使用同一个值。
+	TTL time.Duration
+	// Secret 是 Cookie 签名密钥，由 JWT_SECRET 派生。
+	Secret []byte
 }
 
 // JWTConfig 描述 JWT 签发方与各客户端令牌参数。
@@ -105,14 +121,9 @@ type Application interface {
 	// Redis 返回 Redis 客户端；未启用 Redis 时返回 nil。
 	Redis() *redis.Client
 
-	// JWT 返回管理后台令牌签名配置。
-	JWT() JWTConfig
-
-	// RenderCache 返回前台渲染缓存配置。
-	RenderCache() RenderCacheConfig
-
-	// Upload 返回媒体上传与访问配置。
-	Upload() UploadConfig
+	// Config 返回应用配置（MySQL / Redis / JWT / Session / 渲染缓存 / 上传）。
+	// 返回值是拷贝，调用方修改不会影响内部状态。
+	Config() Config
 
 	// Close 释放数据库与 Redis 连接。
 	Close() error

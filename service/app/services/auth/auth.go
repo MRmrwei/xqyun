@@ -34,37 +34,9 @@ type Authenticator interface {
 	Login(ctx context.Context, credentials Credentials) (*LoginResult, error)
 }
 
-// RefreshCredentials 是刷新令牌的凭据与请求元信息。
-// RefreshToken 是 HttpOnly Cookie 中的明文，服务端用 SHA-256 后作为 Redis 会话 key 的一部分。
-type RefreshCredentials struct {
-	RefreshToken string
-	UserAgent    string
-	IP           string
-}
-
-// TokenRefresher 定义刷新 Access Token 的能力。
-// 实现需要校验刷新令牌是否有效、未过期、未吊销，且账号仍可用；
-// 刷新成功后必须轮换刷新令牌（旧令牌立即失效），返回新的 Access Token 与刷新令牌。
-type TokenRefresher interface {
-	Refresh(ctx context.Context, credentials RefreshCredentials) (*LoginResult, error)
-}
-
-// LogoutCredentials 是退出登录的凭据。
-// 现阶段只吊销当前这次会话的刷新令牌；如需「退出所有设备」，后续再加独立用例。
-type LogoutCredentials struct {
-	RefreshToken string
-}
-
 // Logouter 定义退出登录能力。
-// 实现按刷新令牌哈希吊销记录；令牌缺失、已过期或已吊销都应视为成功（幂等），
-// 以便 handler 无论结果如何都能清除 Cookie。
+// 实现删除当前登录会话；会话缺失或已失效都应视为成功（幂等），
+// 以便 handler 无论结果如何都能完成响应。
 type Logouter interface {
-	Logout(ctx context.Context, credentials LogoutCredentials) error
-}
-
-// SessionManager 是管理登录会话的完整能力，由同一个实现同时提供刷新与退出。
-// 用例层只需要注入一次，不需要分别传入两个相同实例。
-type SessionManager interface {
-	TokenRefresher
-	Logouter
+	Logout(ctx context.Context) error
 }
