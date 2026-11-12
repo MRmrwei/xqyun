@@ -155,17 +155,17 @@
 
 ### 3.4 登录会话（Redis，不建表）
 
-刷新令牌不存 MySQL，使用 Redis 保存，key 自带 TTL：
+管理后台登录会话由 `hertz-contrib/sessions` 的 Redis store 保存，不落 MySQL。Redis key 形如：
 
 ```
-xqyun:refresh:{token_type}:{sha256(refresh_token)}
+session_{sessionID}
 ```
 
-value 为 JSON，包含 `user_id`、`token_type`、`user_agent`、`ip`、`expires_at`、`created_at`。
+value 为编码后的会话数据（`admin_user_id` / `admin_username` 等），TTL 默认 12 小时；浏览器 Cookie `xqyun_admin_session` 只保存加密签名的会话 ID。退出登录或改密时删除对应 key。
 
-- TTL 与配置的 `refresh_ttl` 对齐（管理后台默认 7 天），过期自动删除；
-- 刷新时用 Lua 脚本原子地写入新 key 并删除旧 key，旧令牌立即失效；
-- 退出登录直接删除 key；
+> JWT 刷新令牌（后续前台用户登录预留）：如需启用，使用 `xqyun:refresh:{token_type}:{sha256}`，同样不建表；TTL 与 `refresh_ttl` 对齐，刷新时用 Lua 脚本原子轮换，退出时删除 key。
+
+- 管理后台 Session 的 Redis key 由 hertz-contrib/sessions 管理，默认 `session_{sessionID}`，过期自动删除；
 - Redis 必须启用（`redis.enabled=true`），否则服务启动失败。
 
 ---

@@ -8,10 +8,10 @@ info:
     小鹊云 Go 后端（CloudWeGo Hertz）页面编排接口文档，覆盖后台「站点编排」的页面内容、顶部导航、底部导航与站点配置。
 
     通用约定：
-    - 所有响应 HTTP 状态码统一为 200，成功与失败通过响应体中的 `code` 判断：`0` 成功，`40000` 参数错误，`40100` 未登录 / 令牌无效，`40300` 无权限，`40400` 不存在，`40900` 资源冲突，`50000` 服务端错误。
+    - 所有响应 HTTP 状态码统一为 200，成功与失败通过响应体中的 `code` 判断：`0` 成功，`40000` 参数错误，`40100` 未登录 / 会话失效，`40300` 无权限，`40400` 不存在，`40900` 资源冲突，`50000` 服务端错误。
     - 时间字段统一为 Unix 时间戳（秒），JSON 中为 number。
     - JSON 中 ID 统一为字符串，避免 JavaScript 大整数精度丢失。
-    - 本组接口需要 `Authorization: Bearer <access_token>`；登录、刷新令牌与退出登录见 `admin-auth-session.yaml`。
+    - 本组接口需要携带 HttpOnly 会话 Cookie `xqyun_admin_session`；登录、退出与 `GET /admin/me` 见 `admin-auth-session.yaml`。
 
     说明：`/api/v1/frontend/*` 前台渲染、导航与表单接口尚未实现，暂未收录。
 servers:
@@ -35,7 +35,7 @@ paths:
         按语言、状态、关键词分页查询页面，按更新时间倒序。
         列表项同时返回同一翻译组下的其他语言版本，供「前往翻译版本」使用。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       parameters:
         - $ref: '#/components/parameters/LocaleQuery'
         - name: status
@@ -69,7 +69,7 @@ paths:
         新建草稿页面。`copy_from_id` 非空时复制来源页面的区块结构并重新生成区块 ID。
         同一语言下路径不能重复，冲突返回 `40900`。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -93,7 +93,7 @@ paths:
       operationId: getAdminPage
       summary: 页面详情（当前草稿）
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       responses:
         '200':
           description: |
@@ -110,7 +110,7 @@ paths:
         保存页面路径、名称、SEO 与区块。只写草稿，不影响线上内容。
         `seo` 省略时保留原值；`blocks` 省略时保留原区块，传空数组表示清空。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -130,7 +130,7 @@ paths:
       operationId: deleteAdminPage
       summary: 软删除页面
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       responses:
         '200':
           description: |
@@ -152,7 +152,7 @@ paths:
         未传 `blocks` 时复制源页面区块结构、生成新的区块 ID，并清空标题 / 正文等可翻译文本；
         图片、视频、链接、图标、主题、版式与数字 / 布尔值保留。SEO 默认清空。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -179,7 +179,7 @@ paths:
         用当前草稿覆盖线上内容，`version + 1`，状态改为 `published`，并写入发布记录。
         只影响当前语言，不级联发布配对语言。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: false
         content:
@@ -205,7 +205,7 @@ paths:
       description: |
         状态改为未发布并清空线上内容，草稿保留，可再次发布。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: false
         content:
@@ -227,7 +227,7 @@ paths:
       operationId: listAdminMenus
       summary: 菜单列表
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       responses:
         '200':
           description: |
@@ -246,7 +246,7 @@ paths:
       summary: 菜单详情与菜单项
       description: 返回两级菜单树；页脚顶级项是栏目，`children` 是栏目内链接。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       responses:
         '200':
           description: |
@@ -263,7 +263,7 @@ paths:
         整体替换菜单项，`items` 的数组顺序即展示顺序。
         菜单容器不存在时自动创建；传空数组表示清空菜单。菜单项最多两级。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -291,7 +291,7 @@ paths:
         值本身可携带中英文文案。
         响应为扁平结构：`locale` 加各设置 key，值结构与保存时一致。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       parameters:
         - $ref: '#/components/parameters/LocaleQuery'
       responses:
@@ -312,7 +312,7 @@ paths:
         `default_locale` / `allow_index` / `seo`）作为全局项保存，其余 key 按 `locale` 保存；
         只更新传入的 key，不删除未传的设置。
       security:
-        - BearerAuth: []
+        - AdminSessionAuth: []
       requestBody:
         required: true
         content:
@@ -330,11 +330,11 @@ paths:
 
 components:
   securitySchemes:
-    BearerAuth:
-      type: http
-      scheme: bearer
-      bearerFormat: JWT
-      description: '管理后台 Access Token，放在 Authorization: Bearer <token>，默认有效期 15 分钟。'
+    AdminSessionAuth:
+      type: apiKey
+      in: cookie
+      name: xqyun_admin_session
+      description: 登录成功时由服务端写入的 HttpOnly 会话 Cookie，默认有效期 12 小时。
 
   parameters:
     PageID:
